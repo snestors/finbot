@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+.venvwsl/
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+data/finbot.db
+data/receipts/
+data/knowledge/*.md

@@ -1,0 +1,9 @@
+tunnel: finbot
+credentials-file: /home/finbot/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: finbot.tudominio.com
+    service: http://localhost:8080
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404

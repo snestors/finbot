@@ -1,0 +1,21 @@
+[Unit]
+Description=FinBot WhatsApp Bridge
+After=network-online.target
+
+[Service]
+Type=simple
+User=finbot
+WorkingDirectory=/opt/finbot/whatsapp-bridge
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=10
+Environment=PYTHON_WEBHOOK=http://localhost:8080/webhook/whatsapp
+Environment=BRIDGE_PORT=3001
+MemoryMax=384M
+MemoryHigh=300M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finbot-bridge
+
+[Install]
+WantedBy=multi-user.target

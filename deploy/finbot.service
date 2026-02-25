@@ -1,0 +1,23 @@
+[Unit]
+Description=FinBot Financial Bot
+After=network-online.target
+Wants=network-online.target
+After=finbot-bridge.service
+
+[Service]
+Type=simple
+User=finbot
+WorkingDirectory=/opt/finbot
+Environment=PATH=/opt/finbot/venv/bin:/usr/bin:/bin
+EnvironmentFile=/opt/finbot/.env
+ExecStart=/opt/finbot/venv/bin/python src/main.py
+Restart=always
+RestartSec=10
+MemoryMax=512M
+MemoryHigh=400M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finbot
+
+[Install]
+WantedBy=multi-user.target
