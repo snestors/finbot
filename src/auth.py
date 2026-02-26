@@ -16,7 +16,7 @@ PUBLIC_PATHS = {
     "/login", "/login.html", "/api/login", "/api/health",
     "/webhook/whatsapp", "/favicon.ico",
 }
-PUBLIC_PREFIXES = ("/css/", "/js/auth.js", "/api/login")
+PUBLIC_PREFIXES = ("/css/", "/js/auth.js", "/api/login", "/assets/")
 
 
 def is_public(path: str) -> bool:
