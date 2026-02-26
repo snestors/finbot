@@ -9,13 +9,15 @@ def _now() -> datetime:
 
 
 class IngresoRepo:
-    async def create(self, monto: float, fuente: str, descripcion: str = "") -> int:
+    async def create(self, monto: float, fuente: str, descripcion: str = "",
+                     moneda: str = "PEN", cuenta_id: int = None) -> int:
         now = _now()
         db = await get_db()
         cursor = await db.execute(
-            """INSERT INTO ingresos (monto, fuente, descripcion, mes, fecha)
-               VALUES (?, ?, ?, ?, ?)""",
-            (monto, fuente, descripcion or fuente, now.strftime("%Y-%m"), now.isoformat()),
+            """INSERT INTO ingresos (monto, fuente, descripcion, mes, fecha, moneda, cuenta_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (monto, fuente, descripcion or fuente, now.strftime("%Y-%m"), now.isoformat(),
+             moneda, cuenta_id),
         )
         await db.commit()
         return cursor.lastrowid

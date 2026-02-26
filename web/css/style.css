@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   FINBOT v5 — Cyberpunk Theme
+   FINBOT v6 — Cyberpunk Theme
    ═══════════════════════════════════════════ */
 
 :root {
@@ -82,6 +82,7 @@ body::after {
 .sidebar-nav {
   flex: 1;
   padding: 12px 0;
+  overflow-y: auto;
 }
 .sidebar-nav a {
   display: flex;
@@ -266,6 +267,7 @@ body::after {
   background: var(--panel);
   border-radius: 8px;
   font-size: 0.85rem;
+  gap: 8px;
 }
 .tx-item:nth-child(odd) { background: rgba(255,255,255,0.02); }
 .tx-item .tx-desc { color: var(--text); flex: 1; }
@@ -274,10 +276,64 @@ body::after {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin: 0 12px;
+}
+.tx-item .tx-comercio {
+  color: var(--yellow);
+  font-size: 0.75rem;
+  margin-left: 4px;
 }
 .tx-item .tx-amount { color: var(--magenta); font-weight: 600; white-space: nowrap; }
 .tx-item .tx-amount.income { color: var(--green); }
+
+/* ── Metodo pago badges ───────────────── */
+.metodo-badge {
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.metodo-badge.metodo-efectivo { background: rgba(57,255,20,0.15); color: var(--green); }
+.metodo-badge.metodo-tarjeta_debito { background: rgba(0,240,255,0.15); color: var(--cyan); }
+.metodo-badge.metodo-tarjeta_credito { background: rgba(255,42,109,0.15); color: var(--magenta); }
+.metodo-badge.metodo-transferencia { background: rgba(155,89,182,0.15); color: #9b59b6; }
+.metodo-badge.metodo-yape { background: rgba(124,58,237,0.15); color: #7c3aed; }
+.metodo-badge.metodo-plin { background: rgba(6,182,212,0.15); color: #06b6d4; }
+
+/* ── Top comercios ────────────────────── */
+.comercio-list { display: flex; flex-direction: column; gap: 6px; }
+.comercio-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.comercio-item:nth-child(odd) { background: rgba(255,255,255,0.02); }
+.comercio-rank {
+  font-family: var(--font-heading);
+  font-size: 0.7rem;
+  color: var(--muted);
+  width: 24px;
+}
+.comercio-name { flex: 1; color: var(--text); }
+.comercio-count { color: var(--muted); font-size: 0.75rem; }
+.comercio-total { color: var(--cyan); font-weight: 600; white-space: nowrap; }
+
+/* ── Metodos pago list ────────────────── */
+.metodo-list { display: flex; flex-direction: column; gap: 10px; }
+.metodo-item { padding: 4px 0; }
+.metodo-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 0.85rem;
+}
+.metodo-total { color: var(--muted); font-size: 0.8rem; }
 
 /* ── Chat ──────────────────────────────── */
 .chat-container { display: flex; flex-direction: column; height: 100%; }
@@ -338,7 +394,7 @@ body::after {
   background: var(--panel);
   align-items: center;
 }
-.chat-input-bar input {
+.chat-input-bar input[type="text"] {
   flex: 1;
   padding: 12px 16px;
   border-radius: 8px;
@@ -350,7 +406,7 @@ body::after {
   outline: none;
   transition: border-color 0.3s;
 }
-.chat-input-bar input:focus { border-color: var(--cyan); box-shadow: 0 0 12px rgba(0,240,255,0.1); }
+.chat-input-bar input[type="text"]:focus { border-color: var(--cyan); box-shadow: 0 0 12px rgba(0,240,255,0.1); }
 
 .chat-input-bar button {
   padding: 12px 16px;
@@ -376,7 +432,7 @@ body::after {
 }
 .btn-upload:hover { border-color: var(--cyan) !important; color: var(--cyan); }
 
-/* ── Forms (Budgets/Debts) ─────────────── */
+/* ── Forms (Budgets/Debts/Accounts/Settings) ─ */
 .form-card {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -397,8 +453,9 @@ body::after {
   gap: 12px;
   margin-bottom: 12px;
   align-items: end;
+  flex-wrap: wrap;
 }
-.form-group { display: flex; flex-direction: column; flex: 1; }
+.form-group { display: flex; flex-direction: column; flex: 1; min-width: 120px; }
 .form-group label {
   font-size: 0.7rem;
   color: var(--muted);
@@ -429,6 +486,7 @@ body::after {
   cursor: pointer;
   font-size: 0.85rem;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 .btn-primary:hover { box-shadow: 0 0 15px rgba(0,240,255,0.3); }
 .btn-danger {
@@ -474,6 +532,14 @@ body::after {
   color: var(--text);
   font-weight: 600;
 }
+.debt-card .debt-entidad {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-left: 8px;
+  padding: 1px 6px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 4px;
+}
 .debt-card .debt-balance {
   font-family: var(--font-heading);
   font-size: 1.1rem;
@@ -486,6 +552,21 @@ body::after {
   color: var(--muted);
   margin-bottom: 10px;
 }
+.debt-card .debt-cuotas {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 6px;
+}
+.debt-card .cuotas-label {
+  font-size: 0.8rem;
+  color: var(--text);
+}
+.debt-card .cuota-monto {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-left: 12px;
+}
 .debt-card .debt-actions { display: flex; gap: 8px; }
 .debt-pago-input {
   width: 100px;
@@ -496,6 +577,53 @@ body::after {
   color: var(--text);
   font-family: var(--font-body);
   font-size: 0.8rem;
+}
+
+/* ── Account cards ─────────────────────── */
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 16px;
+}
+.account-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+.account-card .account-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.account-card .account-name {
+  font-size: 0.9rem;
+  color: var(--text);
+  font-weight: 600;
+}
+.account-card .account-balance {
+  font-family: var(--font-heading);
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.account-card .account-details {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.account-type-badge {
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0,240,255,0.1);
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
 /* ── Section titles ────────────────────── */
@@ -518,6 +646,7 @@ body::after {
 /* ── Glow borders on hover ─────────────── */
 .stat-card:hover { border-color: rgba(0,240,255,0.2); }
 .chart-box:hover { border-color: rgba(0,240,255,0.15); }
+.account-card:hover { border-color: rgba(0,240,255,0.2); }
 
 /* ── Empty state ───────────────────────── */
 .empty-state {
@@ -537,4 +666,5 @@ body::after {
   .chart-row { grid-template-columns: 1fr; }
   .form-row { flex-direction: column; }
   .msg { max-width: 90%; }
+  .accounts-grid { grid-template-columns: 1fr; }
 }

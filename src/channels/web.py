@@ -36,6 +36,7 @@ class WebSocketManager:
 
 def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                presupuesto_repo, deuda_repo, whatsapp_channel, ws_manager,
+               perfil_repo=None, cuenta_repo=None,
                lifespan=None) -> FastAPI:
 
     app = FastAPI(title="FinBot", docs_url="/api/docs", lifespan=lifespan)
@@ -190,6 +191,51 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
     async def registrar_pago(deuda_id: int, data: dict):
         await deuda_repo.registrar_pago(deuda_id, data["monto"])
         return {"ok": True}
+
+    # --- Perfil ---
+    @app.get("/api/perfil")
+    async def get_perfil():
+        if not perfil_repo:
+            return {"error": "Perfil no disponible"}
+        perfil = await perfil_repo.get()
+        return perfil or {}
+
+    @app.post("/api/perfil")
+    async def save_perfil(data: dict):
+        if not perfil_repo:
+            return {"error": "Perfil no disponible"}
+        result = await perfil_repo.create_or_update(data)
+        return result
+
+    # --- Cuentas ---
+    @app.get("/api/cuentas")
+    async def get_cuentas():
+        if not cuenta_repo:
+            return []
+        return await cuenta_repo.get_all()
+
+    @app.post("/api/cuentas")
+    async def save_cuenta(data: dict):
+        if not cuenta_repo:
+            return {"error": "Cuentas no disponible"}
+        doc_id = await cuenta_repo.save(data)
+        return {"id": doc_id}
+
+    @app.delete("/api/cuentas/{cuenta_id}")
+    async def delete_cuenta(cuenta_id: int):
+        if not cuenta_repo:
+            return {"error": "Cuentas no disponible"}
+        await cuenta_repo.delete(cuenta_id)
+        return {"ok": True}
+
+    # --- Dashboard extras ---
+    @app.get("/api/dashboard/top-comercios")
+    async def top_comercios(mes: str = None):
+        return await gasto_repo.top_comercios(mes)
+
+    @app.get("/api/dashboard/metodos-pago")
+    async def metodos_pago(mes: str = None):
+        return await gasto_repo.metodo_pago_breakdown(mes)
 
     # --- WhatsApp status ---
     @app.get("/api/whatsapp/qr")

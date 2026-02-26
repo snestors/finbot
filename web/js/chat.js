@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   FINBOT v5 — Chat
+   FINBOT v6 — Chat
    ═══════════════════════════════════════════ */
 
 const messagesEl = document.getElementById('chat-messages');

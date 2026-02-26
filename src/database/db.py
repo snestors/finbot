@@ -26,7 +26,11 @@ CREATE TABLE IF NOT EXISTS gastos (
     fuente TEXT NOT NULL,
     fecha TEXT NOT NULL,
     mes TEXT NOT NULL,
-    semana TEXT NOT NULL
+    semana TEXT NOT NULL,
+    moneda TEXT NOT NULL DEFAULT 'PEN',
+    comercio TEXT,
+    metodo_pago TEXT,
+    cuenta_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS ingresos (
@@ -35,7 +39,9 @@ CREATE TABLE IF NOT EXISTS ingresos (
     fuente TEXT NOT NULL,
     descripcion TEXT NOT NULL DEFAULT '',
     mes TEXT NOT NULL,
-    fecha TEXT NOT NULL
+    fecha TEXT NOT NULL,
+    moneda TEXT NOT NULL DEFAULT 'PEN',
+    cuenta_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS deudas (
@@ -46,7 +52,11 @@ CREATE TABLE IF NOT EXISTS deudas (
     pago_minimo REAL NOT NULL DEFAULT 0,
     fecha_corte INTEGER DEFAULT 0,
     fecha_pago INTEGER DEFAULT 0,
-    activa INTEGER NOT NULL DEFAULT 1
+    activa INTEGER NOT NULL DEFAULT 1,
+    entidad TEXT,
+    cuotas_total INTEGER DEFAULT 0,
+    cuotas_pagadas INTEGER DEFAULT 0,
+    cuota_monto REAL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS deuda_pagos (
@@ -64,6 +74,24 @@ CREATE TABLE IF NOT EXISTS presupuestos (
     alerta_porcentaje REAL NOT NULL DEFAULT 80
 );
 
+CREATE TABLE IF NOT EXISTS perfil_usuario (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT,
+    moneda_default TEXT NOT NULL DEFAULT 'PEN',
+    onboarding_completo INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cuentas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    tipo TEXT NOT NULL DEFAULT 'efectivo',
+    moneda TEXT NOT NULL DEFAULT 'PEN',
+    saldo REAL NOT NULL DEFAULT 0,
+    color TEXT DEFAULT '#00f0ff',
+    activa INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE INDEX IF NOT EXISTS idx_gastos_mes ON gastos(mes);
 CREATE INDEX IF NOT EXISTS idx_gastos_semana ON gastos(semana);
 CREATE INDEX IF NOT EXISTS idx_gastos_fecha ON gastos(fecha);
@@ -72,6 +100,29 @@ CREATE INDEX IF NOT EXISTS idx_ingresos_mes ON ingresos(mes);
 CREATE INDEX IF NOT EXISTS idx_mensajes_timestamp ON mensajes(timestamp);
 """
 
+MIGRATIONS = [
+    ("gastos", "moneda", "ALTER TABLE gastos ADD COLUMN moneda TEXT NOT NULL DEFAULT 'PEN'"),
+    ("gastos", "comercio", "ALTER TABLE gastos ADD COLUMN comercio TEXT"),
+    ("gastos", "metodo_pago", "ALTER TABLE gastos ADD COLUMN metodo_pago TEXT"),
+    ("gastos", "cuenta_id", "ALTER TABLE gastos ADD COLUMN cuenta_id INTEGER"),
+    ("ingresos", "moneda", "ALTER TABLE ingresos ADD COLUMN moneda TEXT NOT NULL DEFAULT 'PEN'"),
+    ("ingresos", "cuenta_id", "ALTER TABLE ingresos ADD COLUMN cuenta_id INTEGER"),
+    ("deudas", "entidad", "ALTER TABLE deudas ADD COLUMN entidad TEXT"),
+    ("deudas", "cuotas_total", "ALTER TABLE deudas ADD COLUMN cuotas_total INTEGER DEFAULT 0"),
+    ("deudas", "cuotas_pagadas", "ALTER TABLE deudas ADD COLUMN cuotas_pagadas INTEGER DEFAULT 0"),
+    ("deudas", "cuota_monto", "ALTER TABLE deudas ADD COLUMN cuota_monto REAL DEFAULT 0"),
+]
+
+
+async def _run_migrations(db: aiosqlite.Connection):
+    for table, column, sql in MIGRATIONS:
+        try:
+            await db.execute(sql)
+            logger.info(f"Migration: added {table}.{column}")
+        except Exception:
+            pass  # Column already exists
+    await db.commit()
+
 
 async def init_db():
     global _db
@@ -79,6 +130,7 @@ async def init_db():
     _db = await aiosqlite.connect(str(DB_PATH))
     _db.row_factory = aiosqlite.Row
     await _db.executescript(SCHEMA)
+    await _run_migrations(_db)
     await _db.commit()
     logger.info(f"SQLite initialized: {DB_PATH}")
 

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   FINBOT v5 — Budgets CRUD
+   FINBOT v6 — Budgets CRUD
    ═══════════════════════════════════════════ */
 
 const budgetForm = document.getElementById('budget-form');

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   FINBOT v5 — SPA Router & Global State
+   FINBOT v6 — SPA Router & Global State
    ═══════════════════════════════════════════ */
 
 let ws = null;
@@ -20,6 +20,8 @@ function navigateTo(page) {
   if (page === 'chat' && typeof scrollChatBottom === 'function') scrollChatBottom();
   if (page === 'budgets' && typeof loadBudgets === 'function') loadBudgets();
   if (page === 'debts' && typeof loadDebts === 'function') loadDebts();
+  if (page === 'accounts' && typeof loadAccounts === 'function') loadAccounts();
+  if (page === 'settings' && typeof loadSettings === 'function') loadSettings();
 }
 
 // Nav click handling
@@ -102,6 +104,7 @@ async function pollWhatsApp() {
 }
 
 // ── Boot ──────────────────────────────────
+loadUserProfile();
 connectWebSocket();
 pollWhatsApp();
 setInterval(pollWhatsApp, 15000);

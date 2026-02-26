@@ -1,9 +1,22 @@
 /* ═══════════════════════════════════════════
-   FINBOT v5 — Utilities
+   FINBOT v6 — Utilities
    ═══════════════════════════════════════════ */
 
-function formatCurrency(amount) {
-  return `S/${(amount || 0).toFixed(2)}`;
+let _userCurrency = 'PEN';
+
+const CURRENCY_SYMBOLS = {
+  PEN: 'S/',
+  USD: '$',
+  EUR: '€',
+};
+
+function getCurrencySymbol(moneda) {
+  return CURRENCY_SYMBOLS[(moneda || _userCurrency).toUpperCase()] || 'S/';
+}
+
+function formatCurrency(amount, moneda) {
+  const symbol = getCurrencySymbol(moneda);
+  return `${symbol}${(amount || 0).toFixed(2)}`;
 }
 
 function formatTime(isoString) {
@@ -37,4 +50,17 @@ async function apiPost(path, body) {
 
 async function apiDelete(path) {
   return apiFetch(path, { method: 'DELETE' });
+}
+
+// Load user profile and set currency
+async function loadUserProfile() {
+  try {
+    const perfil = await apiFetch('/api/perfil');
+    if (perfil && perfil.moneda_default) {
+      _userCurrency = perfil.moneda_default;
+    }
+    return perfil;
+  } catch {
+    return null;
+  }
 }

@@ -3,15 +3,38 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logger = logging.getLogger(__name__)
 
+CURRENCY_SYMBOLS = {"PEN": "S/", "USD": "$", "EUR": "€"}
+
 
 class SchedulerService:
     def __init__(self, message_bus, gasto_repo, presupuesto_repo=None,
-                 budget_service=None, timezone: str = "America/Lima"):
+                 budget_service=None, perfil_repo=None, timezone: str = "America/Lima"):
         self.scheduler = AsyncIOScheduler(timezone=timezone)
         self.bus = message_bus
         self.gasto_repo = gasto_repo
         self.presupuesto_repo = presupuesto_repo
         self.budget_service = budget_service
+        self.perfil_repo = perfil_repo
+
+    async def _get_user_name(self) -> str:
+        if self.perfil_repo:
+            try:
+                perfil = await self.perfil_repo.get()
+                if perfil and perfil.get("nombre"):
+                    return perfil["nombre"]
+            except Exception:
+                pass
+        return ""
+
+    async def _get_currency_symbol(self) -> str:
+        if self.perfil_repo:
+            try:
+                perfil = await self.perfil_repo.get()
+                if perfil and perfil.get("moneda_default"):
+                    return CURRENCY_SYMBOLS.get(perfil["moneda_default"], "S/")
+            except Exception:
+                pass
+        return "S/"
 
     def start(self):
         # Daily summary at 8:00 AM
@@ -66,16 +89,22 @@ class SchedulerService:
         logger.info(f"Scheduler started with jobs: {jobs}")
 
     async def _resumen_diario(self):
+        nombre = await self._get_user_name()
+        saludo = f"Buenos dias {nombre}!" if nombre else "Buenos dias!"
         text = await self.gasto_repo.resumen_hoy()
-        await self.bus.send_proactive(f"Buenos dias! {text}")
+        await self.bus.send_proactive(f"{saludo} {text}")
 
     async def _resumen_semanal(self):
+        nombre = await self._get_user_name()
+        saludo = f"Hey {nombre}," if nombre else "Hey,"
         text = await self.gasto_repo.resumen_semana()
-        await self.bus.send_proactive(f"Resumen semanal:\n{text}")
+        await self.bus.send_proactive(f"{saludo} resumen semanal:\n{text}")
 
     async def _resumen_mensual(self):
+        nombre = await self._get_user_name()
+        saludo = f"Hola {nombre}!" if nombre else "Hola!"
         text = await self.gasto_repo.resumen_mes()
-        await self.bus.send_proactive(f"Resumen del mes anterior:\n{text}")
+        await self.bus.send_proactive(f"{saludo} Resumen del mes anterior:\n{text}")
 
     async def _alerta_presupuestos(self):
         try:
@@ -95,8 +124,10 @@ class SchedulerService:
         try:
             gastos = await self.gasto_repo.get_today()
             if not gastos:
+                nombre = await self._get_user_name()
+                saludo = f"{nombre}, n" if nombre else "N"
                 await self.bus.send_proactive(
-                    "No registraste gastos hoy. Si tuviste alguno, aun puedes anotarlo!"
+                    f"{saludo}o registraste gastos hoy. Si tuviste alguno, aun puedes anotarlo!"
                 )
         except Exception as e:
             logger.error(f"Error checking inactivity: {e}")

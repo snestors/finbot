@@ -21,14 +21,18 @@ def _inicio_hoy() -> str:
 
 
 class GastoRepo:
-    async def create(self, monto: float, categoria: str, descripcion: str, fuente: str) -> int:
+    async def create(self, monto: float, categoria: str, descripcion: str, fuente: str,
+                     moneda: str = "PEN", comercio: str = None,
+                     metodo_pago: str = None, cuenta_id: int = None) -> int:
         now = _now()
         db = await get_db()
         cursor = await db.execute(
-            """INSERT INTO gastos (monto, categoria, descripcion, fuente, fecha, mes, semana)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO gastos (monto, categoria, descripcion, fuente, fecha, mes, semana,
+                                   moneda, comercio, metodo_pago, cuenta_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (monto, categoria, descripcion, fuente,
-             now.isoformat(), now.strftime("%Y-%m"), now.strftime("%Y-W%V")),
+             now.isoformat(), now.strftime("%Y-%m"), now.strftime("%Y-W%V"),
+             moneda, comercio, metodo_pago, cuenta_id),
         )
         await db.commit()
         return cursor.lastrowid
@@ -122,3 +126,25 @@ class GastoRepo:
         )
         row = await cursor.fetchone()
         return row["total"]
+
+    async def top_comercios(self, mes: str | None = None, limit: int = 10) -> list[dict]:
+        mes = mes or _mes_actual()
+        db = await get_db()
+        cursor = await db.execute(
+            """SELECT comercio, COUNT(*) as cantidad, SUM(monto) as total
+               FROM gastos WHERE mes = ? AND comercio IS NOT NULL AND comercio != ''
+               GROUP BY comercio ORDER BY total DESC LIMIT ?""",
+            (mes, limit),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def metodo_pago_breakdown(self, mes: str | None = None) -> list[dict]:
+        mes = mes or _mes_actual()
+        db = await get_db()
+        cursor = await db.execute(
+            """SELECT metodo_pago, COUNT(*) as cantidad, SUM(monto) as total
+               FROM gastos WHERE mes = ? AND metodo_pago IS NOT NULL AND metodo_pago != ''
+               GROUP BY metodo_pago ORDER BY total DESC""",
+            (mes,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]

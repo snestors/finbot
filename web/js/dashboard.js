@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   FINBOT v5 — Dashboard
+   FINBOT v6 — Dashboard
    ═══════════════════════════════════════════ */
 
 const statHoy = document.getElementById('stat-hoy');
@@ -8,6 +8,8 @@ const statMes = document.getElementById('stat-mes');
 const statIngresos = document.getElementById('stat-ingresos');
 const budgetBarsEl = document.getElementById('budget-bars');
 const txListEl = document.getElementById('tx-list');
+const topComerciosEl = document.getElementById('top-comercios');
+const metodosPagoEl = document.getElementById('metodos-pago');
 
 let catChart = null;
 
@@ -21,7 +23,29 @@ const CAT_COLORS = {
   salud: '#e67e22',
   compras: '#3498db',
   deuda_pago: '#e74c3c',
+  educacion: '#1abc9c',
+  suscripciones: '#fd79a8',
   otros: '#95a5a6',
+};
+
+const METODO_LABELS = {
+  efectivo: 'Efectivo',
+  tarjeta_debito: 'T. Debito',
+  tarjeta_credito: 'T. Credito',
+  transferencia: 'Transfer.',
+  yape: 'Yape',
+  plin: 'Plin',
+  otro: 'Otro',
+};
+
+const METODO_COLORS = {
+  efectivo: '#39ff14',
+  tarjeta_debito: '#00f0ff',
+  tarjeta_credito: '#ff2a6d',
+  transferencia: '#9b59b6',
+  yape: '#7c3aed',
+  plin: '#06b6d4',
+  otro: '#95a5a6',
 };
 
 function getCatColor(cat) {
@@ -109,7 +133,7 @@ async function refreshCatChart() {
             titleFont: { family: "'Orbitron', sans-serif", size: 11 },
             bodyFont: { family: "'Share Tech Mono', monospace", size: 12 },
             callbacks: {
-              label: (ctx) => ` S/${ctx.parsed.toFixed(2)}`,
+              label: (ctx) => ` ${formatCurrency(ctx.parsed)}`,
             },
           },
         },
@@ -161,15 +185,71 @@ async function refreshTransactions() {
       txListEl.innerHTML = '<div class="empty-state">Sin gastos hoy</div>';
       return;
     }
-    txListEl.innerHTML = gastos.slice(0, 15).map(g => `
-      <div class="tx-item">
-        <span class="tx-desc">${g.descripcion || 'Gasto'}</span>
-        <span class="tx-cat">${g.categoria}</span>
-        <span class="tx-amount">${formatCurrency(g.monto)}</span>
+    txListEl.innerHTML = gastos.slice(0, 15).map(g => {
+      const comercio = g.comercio ? `<span class="tx-comercio">${g.comercio}</span>` : '';
+      const metodo = g.metodo_pago ? `<span class="metodo-badge metodo-${g.metodo_pago}">${METODO_LABELS[g.metodo_pago] || g.metodo_pago}</span>` : '';
+      return `
+        <div class="tx-item">
+          <span class="tx-desc">${g.descripcion || 'Gasto'} ${comercio}</span>
+          <span class="tx-cat">${g.categoria}</span>
+          ${metodo}
+          <span class="tx-amount">${formatCurrency(g.monto, g.moneda)}</span>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    console.error('Error refreshing transactions:', e);
+  }
+}
+
+// ── Top comercios widget ──────────────────
+async function refreshTopComercios() {
+  if (!topComerciosEl) return;
+  try {
+    const comercios = await apiFetch('/api/dashboard/top-comercios');
+    if (!comercios.length) {
+      topComerciosEl.innerHTML = '<div class="empty-state">Sin datos de comercios</div>';
+      return;
+    }
+    topComerciosEl.innerHTML = comercios.slice(0, 5).map((c, i) => `
+      <div class="comercio-item">
+        <span class="comercio-rank">#${i + 1}</span>
+        <span class="comercio-name">${c.comercio}</span>
+        <span class="comercio-count">${c.cantidad}x</span>
+        <span class="comercio-total">${formatCurrency(c.total)}</span>
       </div>
     `).join('');
   } catch (e) {
-    console.error('Error refreshing transactions:', e);
+    console.error('Error refreshing top comercios:', e);
+  }
+}
+
+// ── Metodos de pago breakdown ─────────────
+async function refreshMetodosPago() {
+  if (!metodosPagoEl) return;
+  try {
+    const metodos = await apiFetch('/api/dashboard/metodos-pago');
+    if (!metodos.length) {
+      metodosPagoEl.innerHTML = '<div class="empty-state">Sin datos de metodos de pago</div>';
+      return;
+    }
+    const totalAll = metodos.reduce((s, m) => s + m.total, 0);
+    metodosPagoEl.innerHTML = metodos.map(m => {
+      const label = METODO_LABELS[m.metodo_pago] || m.metodo_pago;
+      const color = METODO_COLORS[m.metodo_pago] || '#666680';
+      const pct = totalAll > 0 ? (m.total / totalAll * 100) : 0;
+      return `
+        <div class="metodo-item">
+          <div class="metodo-header">
+            <span class="metodo-badge" style="background: ${color}20; color: ${color}">${label}</span>
+            <span class="metodo-total">${formatCurrency(m.total)}</span>
+          </div>
+          <div class="budget-bar">
+            <div class="budget-bar-fill ok" style="width:${pct}%; background: ${color}; box-shadow: 0 0 8px ${color}40"></div>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    console.error('Error refreshing metodos pago:', e);
   }
 }
 
@@ -180,6 +260,8 @@ async function refreshDashboard() {
     refreshCatChart(),
     refreshBudgetBars(),
     refreshTransactions(),
+    refreshTopComercios(),
+    refreshMetodosPago(),
   ]);
 }
 

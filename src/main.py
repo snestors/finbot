@@ -1,5 +1,5 @@
 """
-FinBot v5 — Entry point.
+FinBot v6 — Entry point.
 Run: python3 src/main.py  (or python src/main.py on Windows)
 Handles all setup automatically: venv, pip, node, npm, chromium.
 """
@@ -158,7 +158,9 @@ def run_app():
     from src.repository.ingreso_repo import IngresoRepo
     from src.repository.deuda_repo import DeudaRepo
     from src.repository.presupuesto_repo import PresupuestoRepo
-    from src.services.parser import TextParser
+    from src.repository.perfil_repo import PerfilRepo
+    from src.repository.cuenta_repo import CuentaRepo
+    from src.services.parser import AgentParser
     from src.services.receipt_parser import ReceiptParser
     from src.services.budget import BudgetService
     from src.services.scheduler import SchedulerService
@@ -216,21 +218,27 @@ def run_app():
     ingreso_repo = IngresoRepo()
     deuda_repo = DeudaRepo()
     presupuesto_repo = PresupuestoRepo()
+    perfil_repo = PerfilRepo()
+    cuenta_repo = CuentaRepo()
 
-    text_parser = TextParser(api_key=settings.google_ai_api_key)
+    agent_parser = AgentParser(api_key=settings.google_ai_api_key)
     receipt_parser = ReceiptParser(api_key=settings.google_ai_api_key)
-    budget_service = BudgetService(presupuesto_repo=presupuesto_repo, gasto_repo=gasto_repo)
+    budget_service = BudgetService(presupuesto_repo=presupuesto_repo, gasto_repo=gasto_repo, perfil_repo=perfil_repo)
 
     whatsapp = WhatsAppChannel()
     ws_manager = WebSocketManager()
 
     processor = Processor(
-        text_parser=text_parser,
+        agent_parser=agent_parser,
         receipt_parser=receipt_parser,
         gasto_repo=gasto_repo,
         ingreso_repo=ingreso_repo,
         budget_service=budget_service,
         deuda_repo=deuda_repo,
+        perfil_repo=perfil_repo,
+        cuenta_repo=cuenta_repo,
+        presupuesto_repo=presupuesto_repo,
+        mensaje_repo=mensaje_repo,
     )
 
     message_bus = MessageBus(
@@ -245,6 +253,7 @@ def run_app():
         gasto_repo=gasto_repo,
         presupuesto_repo=presupuesto_repo,
         budget_service=budget_service,
+        perfil_repo=perfil_repo,
         timezone=settings.timezone,
     )
 
@@ -267,6 +276,8 @@ def run_app():
         ingreso_repo=ingreso_repo,
         presupuesto_repo=presupuesto_repo,
         deuda_repo=deuda_repo,
+        perfil_repo=perfil_repo,
+        cuenta_repo=cuenta_repo,
         whatsapp_channel=whatsapp,
         ws_manager=ws_manager,
         lifespan=lifespan,
