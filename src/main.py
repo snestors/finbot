@@ -264,6 +264,7 @@ def run_app():
         presupuesto_repo=presupuesto_repo,
         budget_service=budget_service,
         perfil_repo=perfil_repo,
+        cobro_repo=cobro_repo,
         timezone=settings.timezone,
     )
 
