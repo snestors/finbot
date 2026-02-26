@@ -36,7 +36,8 @@ class WebSocketManager:
 
 def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                presupuesto_repo, deuda_repo, whatsapp_channel, ws_manager,
-               perfil_repo=None, cuenta_repo=None,
+               perfil_repo=None, cuenta_repo=None, cobro_repo=None,
+               tarjeta_repo=None, currency_service=None, sunat_service=None,
                lifespan=None) -> FastAPI:
 
     app = FastAPI(title="FinBot", docs_url="/api/docs", lifespan=lifespan)
@@ -246,6 +247,79 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
     async def get_wa_status():
         return await whatsapp_channel.get_status()
 
+    # --- Cobros ---
+    @app.get("/api/cobros")
+    async def get_cobros():
+        if not cobro_repo:
+            return []
+        return await cobro_repo.get_all()
+
+    @app.post("/api/cobros")
+    async def save_cobro(data: dict):
+        if not cobro_repo:
+            return {"error": "Cobros no disponible"}
+        doc_id = await cobro_repo.save(data)
+        return {"id": doc_id}
+
+    @app.post("/api/cobros/{cobro_id}/pago")
+    async def cobro_pago(cobro_id: int, data: dict):
+        if not cobro_repo:
+            return {"error": "Cobros no disponible"}
+        result = await cobro_repo.registrar_pago(cobro_id, data["monto"])
+        return result
+
+    @app.delete("/api/cobros/{cobro_id}")
+    async def delete_cobro(cobro_id: int):
+        if not cobro_repo:
+            return {"error": "Cobros no disponible"}
+        await cobro_repo.delete(cobro_id)
+        return {"ok": True}
+
+    # --- Tarjetas ---
+    @app.get("/api/tarjetas")
+    async def get_tarjetas():
+        if not tarjeta_repo:
+            return []
+        return await tarjeta_repo.get_all()
+
+    @app.post("/api/tarjetas")
+    async def save_tarjeta(data: dict):
+        if not tarjeta_repo:
+            return {"error": "Tarjetas no disponible"}
+        doc_id = await tarjeta_repo.save(data)
+        return {"id": doc_id}
+
+    @app.delete("/api/tarjetas/{tarjeta_id}")
+    async def delete_tarjeta(tarjeta_id: int):
+        if not tarjeta_repo:
+            return {"error": "Tarjetas no disponible"}
+        await tarjeta_repo.delete(tarjeta_id)
+        return {"ok": True}
+
+    # --- Tipo de Cambio ---
+    @app.get("/api/tipo-cambio")
+    async def get_tipo_cambio():
+        result = {}
+        if sunat_service:
+            try:
+                result["sunat"] = await sunat_service.get_tipo_cambio()
+            except Exception:
+                result["sunat"] = None
+        if currency_service:
+            try:
+                result["rates"] = await currency_service.get_rates()
+            except Exception:
+                result["rates"] = {}
+        return result
+
+    @app.get("/api/convertir")
+    async def convertir(monto: float = 1, de: str = "USD", a: str = "PEN"):
+        if not currency_service:
+            return {"error": "Currency service no disponible"}
+        resultado = await currency_service.convert(monto, de, a)
+        tasa = await currency_service.get_rate(de, a)
+        return {"resultado": resultado, "tasa": tasa, "de": de, "a": a}
+
     # --- Health ---
     @app.get("/api/health")
     async def health():
@@ -253,6 +327,7 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         return {"status": "ok", "whatsapp": wa_status}
 
     # Static files (web dashboard) — mount last so it doesn't override API routes
+    # SPA fallback: serve index.html for unmatched routes
     app.mount("/", StaticFiles(directory="web", html=True), name="web")
 
     return app

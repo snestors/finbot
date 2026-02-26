@@ -9,3 +9,4 @@ node_modules/
 data/finbot.db
 data/receipts/
 data/knowledge/*.md
+web_old/
