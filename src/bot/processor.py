@@ -1,6 +1,9 @@
 import logging
 from dataclasses import dataclass, field
 
+from src.agent.tools import AgentTools
+from src.services.currency import CurrencyService
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,7 +17,7 @@ class Processor:
     def __init__(self, agent_parser, receipt_parser, gasto_repo,
                  ingreso_repo, budget_service, deuda_repo,
                  perfil_repo=None, cuenta_repo=None, presupuesto_repo=None,
-                 mensaje_repo=None):
+                 mensaje_repo=None, document_parser=None):
         self.agent_parser = agent_parser
         self.receipt_parser = receipt_parser
         self.gasto_repo = gasto_repo
@@ -25,9 +28,16 @@ class Processor:
         self.cuenta_repo = cuenta_repo
         self.presupuesto_repo = presupuesto_repo
         self.mensaje_repo = mensaje_repo
+        self.document_parser = document_parser
+        self.tools = AgentTools()
+        self.currency = CurrencyService()
 
     async def process(self, text: str, media: dict | None = None) -> ProcessResult:
-        # --- RECEIPT PHOTO ---
+        # --- MEDIA ---
+        if media and media.get("mimetype"):
+            mime = media["mimetype"]
+            if "pdf" in mime or "spreadsheet" in mime or "excel" in mime:
+                return await self._handle_document(media)
         if media and media.get("mimetype", "").startswith("image/"):
             return await self._handle_receipt(media)
 
@@ -87,6 +97,45 @@ class Processor:
         if alertas:
             response += "\n\n" + "\n".join(alertas)
 
+        return ProcessResult(response_text=response, gasto_ids=gasto_ids)
+
+
+    async def _handle_document(self, media: dict) -> ProcessResult:
+        if not self.document_parser:
+            return ProcessResult(response_text="No puedo procesar documentos todavia.")
+        parsed = await self.document_parser.parse(
+            file_b64=media["data"],
+            mime_type=media["mimetype"],
+        )
+        gasto_ids = []
+        lines = []
+        total = 0
+        for item in parsed.get("items", []):
+            gasto_id = await self.gasto_repo.create(
+                monto=item["monto"],
+                categoria=item.get("categoria", "otros"),
+                descripcion=item.get("descripcion", ""),
+                fuente="documento",
+            )
+            gasto_ids.append(gasto_id)
+            cat = item.get("categoria", "otros").title()
+            desc = item.get("descripcion", "")
+            monto = item["monto"]
+            lines.append(f"  | {cat} S/{monto:.2f} ({desc})")
+            total += item["monto"]
+        tipo = parsed.get("tipo_documento", "documento")
+        emisor = parsed.get("emisor", "Documento")
+        response = "Analice " + tipo + " de " + emisor + ":\n"
+        if parsed.get("resumen"):
+            response += parsed["resumen"] + "\n\n"
+        if lines:
+            response += "Registre:\n" + "\n".join(lines)
+            response += "\n  Total: S/" + f"{total:.2f}"
+        elif not parsed.get("items"):
+            response += parsed.get("resumen", "No encontre items financieros.")
+        alertas = await self.budget.check_alerts_batch(parsed.get("items", []))
+        if alertas:
+            response += "\n\n" + "\n".join(alertas)
         return ProcessResult(response_text=response, gasto_ids=gasto_ids)
 
     async def _build_financial_context(self) -> str:
@@ -274,6 +323,20 @@ class Processor:
                         "moneda": accion.get("moneda", "PEN"),
                         "saldo": accion.get("saldo", 0),
                     })
+
+            elif tipo == "consulta_cambio":
+                monto = accion.get("monto", 1.0)
+                de = accion.get("de", "USD")
+                a = accion.get("a", "PEN")
+                converted = await self.currency.convert(monto, de, a)
+                rate = await self.currency.get_rate(de, a)
+                result["data_response"] = f"{de} {monto:.2f} = {a} {converted:.2f} (tasa: 1 {de} = {rate:.4f} {a})"
+
+            elif tipo == "tool":
+                tool_name = accion.get("name", "")
+                params = accion.get("params", {})
+                tool_result = self.tools.execute(tool_name, params)
+                result["data_response"] = tool_result
 
             elif tipo == "eliminar_gasto":
                 if accion.get("gasto_id"):

@@ -162,6 +162,7 @@ def run_app():
     from src.repository.cuenta_repo import CuentaRepo
     from src.services.parser import AgentParser
     from src.services.receipt_parser import ReceiptParser
+    from src.services.document_parser import DocumentParser
     from src.services.budget import BudgetService
     from src.services.scheduler import SchedulerService
     from src.channels.whatsapp import WhatsAppChannel
@@ -223,6 +224,7 @@ def run_app():
 
     agent_parser = AgentParser(api_key=settings.google_ai_api_key)
     receipt_parser = ReceiptParser(api_key=settings.google_ai_api_key)
+    document_parser = DocumentParser(api_key=settings.google_ai_api_key)
     budget_service = BudgetService(presupuesto_repo=presupuesto_repo, gasto_repo=gasto_repo, perfil_repo=perfil_repo)
 
     whatsapp = WhatsAppChannel()
@@ -239,6 +241,7 @@ def run_app():
         cuenta_repo=cuenta_repo,
         presupuesto_repo=presupuesto_repo,
         mensaje_repo=mensaje_repo,
+        document_parser=document_parser,
     )
 
     message_bus = MessageBus(

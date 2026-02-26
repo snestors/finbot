@@ -1,6 +1,7 @@
 import json
 import logging
 from google import genai
+from src.agent.tools import AgentTools
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,41 @@ comida, transporte, delivery, entretenimiento, servicios, salud, deuda_pago, com
 ## METODOS DE PAGO VALIDOS
 efectivo, tarjeta_debito, tarjeta_credito, transferencia, yape, plin, otro
 
-## MONEDAS
-PEN (soles), USD (dolares), EUR (euros)
+## MONEDAS SOPORTADAS
+PEN (Sol Peruano), USD (Dolar Americano), EUR (Euro), COP (Peso Colombiano),
+MXN (Peso Mexicano), BRL (Real Brasileno), CLP (Peso Chileno), ARS (Peso Argentino),
+BOB (Boliviano), GBP (Libra Esterlina)
+
+Cuando el usuario registre un gasto/ingreso en moneda distinta a su moneda default,
+siempre especifica el campo "moneda" en la accion.
+Para consultar tasas de cambio, usa la accion:
+{"tipo": "consulta_cambio", "monto": 100, "de": "USD", "a": "PEN"}
+
+
+
+## HERRAMIENTAS DEL SISTEMA (MCP Tools)
+Tienes herramientas para gestionar el servidor y tu propio codigo.
+Para usarlas, agrega en acciones:
+{tipo: tool, name: nombre_herramienta, params: {...}}
+
+### Herramientas disponibles:
+- read_file: Leer archivo del proyecto. params: {path: src/main.py}
+- write_file: Escribir archivo (crea backup). params: {path: src/file.py, content: ...}
+- edit_file: Editar parte de un archivo. params: {path: src/file.py, old_text: ..., new_text: ...}
+- list_files: Listar archivos. params: {path: src/}
+- restart_service: Reiniciar FinBot de forma segura. params: {}
+- rpi_status: Estado del RPi (temp, RAM, disco). params: {}
+- run_command: Ejecutar comando seguro (ls, grep, git, df, free, etc). params: {command: git status}
+
+### Ejemplos:
+Usuario: muestrame el codigo del parser
+-> {respuesta: Aqui esta el codigo..., acciones: [{tipo: tool, name: read_file, params: {path: src/services/parser.py}}]}
+
+Usuario: como esta el servidor
+-> {respuesta: Revisando el estado del RPi..., acciones: [{tipo: tool, name: rpi_status, params: {}}]}
+
+Usuario: agrega soporte para moneda COP
+-> {respuesta: Voy a editar el archivo..., acciones: [{tipo: tool, name: edit_file, params: {path: ..., old_text: ..., new_text: ...}}]}
 
 ## EJEMPLOS DE INTERACCION
 
@@ -94,6 +128,7 @@ Usuario: "soles"
 class AgentParser:
     def __init__(self, api_key: str):
         self.client = genai.Client(api_key=api_key)
+        self.tools = AgentTools()
 
     async def parse(self, text: str, context: str = "", history: list[dict] = None) -> dict:
         try:
