@@ -326,8 +326,14 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         wa_status = await whatsapp_channel.get_status()
         return {"status": "ok", "whatsapp": wa_status}
 
-    # Static files (web dashboard) — mount last so it doesn't override API routes
-    # SPA fallback: serve index.html for unmatched routes
-    app.mount("/", StaticFiles(directory="web", html=True), name="web")
+    # Static files for assets
+    app.mount("/assets", StaticFiles(directory="web/assets"), name="assets")
+    app.mount("/css", StaticFiles(directory="web/css"), name="css")
+    app.mount("/js", StaticFiles(directory="web/js"), name="js")
+
+    # SPA fallback: any unmatched route serves index.html for React Router
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        return FileResponse("web/index.html")
 
     return app
