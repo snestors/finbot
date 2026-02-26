@@ -160,6 +160,8 @@ def run_app():
     from src.repository.presupuesto_repo import PresupuestoRepo
     from src.repository.perfil_repo import PerfilRepo
     from src.repository.cuenta_repo import CuentaRepo
+    from src.repository.cobro_repo import CobroRepo
+    from src.repository.tarjeta_repo import TarjetaRepo
     from src.services.parser import AgentParser
     from src.services.receipt_parser import ReceiptParser
     from src.services.document_parser import DocumentParser
@@ -186,6 +188,7 @@ def run_app():
         env = os.environ.copy()
         env["PYTHON_WEBHOOK"] = f"http://localhost:{settings.port}/webhook/whatsapp"
         env["BRIDGE_PORT"] = str(settings.bridge_port)
+        env["MY_NUMBER"] = settings.whatsapp_my_number
 
         bridge_process = subprocess.Popen(
             [node, "index.js"],
@@ -221,6 +224,8 @@ def run_app():
     presupuesto_repo = PresupuestoRepo()
     perfil_repo = PerfilRepo()
     cuenta_repo = CuentaRepo()
+    cobro_repo = CobroRepo()
+    tarjeta_repo = TarjetaRepo()
 
     agent_parser = AgentParser(api_key=settings.google_ai_api_key)
     receipt_parser = ReceiptParser(api_key=settings.google_ai_api_key)
@@ -242,6 +247,8 @@ def run_app():
         presupuesto_repo=presupuesto_repo,
         mensaje_repo=mensaje_repo,
         document_parser=document_parser,
+        cobro_repo=cobro_repo,
+        tarjeta_repo=tarjeta_repo,
     )
 
     message_bus = MessageBus(

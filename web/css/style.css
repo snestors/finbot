@@ -336,7 +336,7 @@ body::after {
 .metodo-total { color: var(--muted); font-size: 0.8rem; }
 
 /* ── Chat ──────────────────────────────── */
-.chat-container { display: flex; flex-direction: column; height: 100%; }
+.chat-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 
 .messages {
   flex: 1;
@@ -345,6 +345,7 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
 }
 
 .msg {
@@ -393,6 +394,10 @@ body::after {
   border-top: 1px solid var(--border);
   background: var(--panel);
   align-items: center;
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
 }
 .chat-input-bar input[type="text"] {
   flex: 1;

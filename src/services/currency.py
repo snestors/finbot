@@ -76,3 +76,37 @@ class CurrencyService:
                 converted = await self.convert(amount, base_currency, tc)
                 parts.append(f"{tc} {converted:.2f}")
         return " | ".join(parts)
+
+
+class SunatTipoCambio:
+    """Tipo de cambio SUNAT/SBS para Peru."""
+    SUNAT_URL = "https://api.apis.net.pe/v2/sunat/tipo-cambio"
+    TOKEN = "apis-token-11526.ogNVdWq1ZL7S4SjfUIbz5xyAnlXulamA"
+
+    def __init__(self):
+        self._cache: dict = {}
+        self._last_fetch: float = 0
+
+    async def get_tipo_cambio(self) -> dict:
+        if self._cache and (time.time() - self._last_fetch) < 3600:
+            return self._cache
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    self.SUNAT_URL,
+                    headers={"Authorization": f"Bearer {self.TOKEN}"}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self._cache = {
+                        "compra": data.get("precioCompra", 0),
+                        "venta": data.get("precioVenta", 0),
+                        "fecha": data.get("fecha", ""),
+                        "fuente": "SUNAT"
+                    }
+                    self._last_fetch = time.time()
+                    logger.info(f"SUNAT tipo cambio: compra={self._cache['compra']} venta={self._cache['venta']}")
+                    return self._cache
+        except Exception as e:
+            logger.warning(f"Error fetching SUNAT tipo cambio: {e}")
+        return {"compra": 3.72, "venta": 3.75, "fecha": "", "fuente": "fallback"}

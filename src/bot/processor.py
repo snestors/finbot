@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass, field
 
 from src.agent.tools import AgentTools
-from src.services.currency import CurrencyService
+from src.services.currency import CurrencyService, SunatTipoCambio
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ class Processor:
     def __init__(self, agent_parser, receipt_parser, gasto_repo,
                  ingreso_repo, budget_service, deuda_repo,
                  perfil_repo=None, cuenta_repo=None, presupuesto_repo=None,
-                 mensaje_repo=None, document_parser=None):
+                 mensaje_repo=None, document_parser=None, cobro_repo=None, tarjeta_repo=None):
         self.agent_parser = agent_parser
         self.receipt_parser = receipt_parser
         self.gasto_repo = gasto_repo
@@ -31,6 +31,9 @@ class Processor:
         self.document_parser = document_parser
         self.tools = AgentTools()
         self.currency = CurrencyService()
+        self.sunat = SunatTipoCambio()
+        self.cobro_repo = cobro_repo
+        self.tarjeta_repo = tarjeta_repo
 
     async def process(self, text: str, media: dict | None = None) -> ProcessResult:
         # --- MEDIA ---
@@ -260,6 +263,17 @@ class Processor:
                     result["data_response"] = await self.gasto_repo.resumen_mes()
                 elif periodo == "deudas":
                     result["data_response"] = await self.deuda_repo.resumen()
+                elif periodo == "cobros" and self.cobro_repo:
+                    result["data_response"] = await self.cobro_repo.resumen()
+                elif periodo == "tarjetas" and self.tarjeta_repo:
+                    tarjetas = await self.tarjeta_repo.get_all()
+                    if tarjetas:
+                        lines = ["Tus tarjetas:"]
+                        for t in tarjetas:
+                            lines.append(f"  | {t['nombre']} ({t['banco']}) *{t['ultimos_4']} - Limite: {t['moneda']} {t['limite_credito']:.2f}")
+                        result["data_response"] = "\n".join(lines)
+                    else:
+                        result["data_response"] = "No tienes tarjetas registradas."
                 elif periodo == "cuentas" and self.cuenta_repo:
                     cuentas = await self.cuenta_repo.get_all()
                     if cuentas:
@@ -337,6 +351,41 @@ class Processor:
                 params = accion.get("params", {})
                 tool_result = self.tools.execute(tool_name, params)
                 result["data_response"] = tool_result
+
+            elif tipo == "cobro":
+                if self.cobro_repo:
+                    await self.cobro_repo.save({
+                        "deudor": accion["deudor"],
+                        "concepto": accion.get("concepto", ""),
+                        "monto_total": accion["monto"],
+                        "moneda": accion.get("moneda", "PEN"),
+                    })
+
+            elif tipo == "pago_cobro":
+                if self.cobro_repo:
+                    cobros = await self.cobro_repo.get_by_deudor(accion.get("nombre", ""))
+                    if cobros:
+                        updated = await self.cobro_repo.registrar_pago(cobros[0]["id"], accion["monto"])
+                        result["data_response"] = f"Pago registrado. {updated.get('deudor', '')} debe ahora S/{updated.get('saldo_pendiente', 0):.2f}"
+                    else:
+                        result["data_response"] = "No encontre cobros para ese deudor."
+
+            elif tipo == "tipo_cambio_sunat":
+                tc = await self.sunat.get_tipo_cambio()
+                result["data_response"] = f"Tipo de cambio SUNAT ({tc['fuente']}):\nCompra: S/{tc['compra']}\nVenta: S/{tc['venta']}"
+
+
+            elif tipo == "tarjeta":
+                if self.tarjeta_repo:
+                    await self.tarjeta_repo.save({
+                        "nombre": accion["nombre"],
+                        "banco": accion.get("banco", ""),
+                        "tipo": accion.get("tipo_tarjeta", "credito"),
+                        "ultimos_4": accion.get("ultimos_4", ""),
+                        "limite_credito": accion.get("limite_credito", 0),
+                        "fecha_corte": accion.get("fecha_corte", 1),
+                        "fecha_pago": accion.get("fecha_pago", 15),
+                    })
 
             elif tipo == "eliminar_gasto":
                 if accion.get("gasto_id"):

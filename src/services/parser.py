@@ -60,6 +60,25 @@ La respuesta SIEMPRE debe ser un mensaje natural y conversacional.
 {"tipo": "crear_cuenta", "nombre": "BCP Ahorro", "tipo_cuenta": "banco", "moneda": "PEN", "saldo": 1500.0}
 - tipo_cuenta: efectivo, banco, tarjeta_credito, tarjeta_debito, digital
 
+
+### cobro — Registrar cuenta por cobrar (alguien te debe)
+{"tipo": "cobro", "deudor": "Benjo", "monto": 800.0, "concepto": "Xbox", "moneda": "PEN"}
+
+### pago_cobro — Registrar pago de cuenta por cobrar (alguien te pago)
+{"tipo": "pago_cobro", "nombre": "Benjo", "monto": 50.0}
+
+### consulta_cobros — Ver cuentas por cobrar
+{"tipo": "consulta", "periodo": "cobros"}
+
+### tipo_cambio_sunat — Consultar tipo de cambio SUNAT
+{"tipo": "tipo_cambio_sunat"}
+
+### tarjeta — Registrar tarjeta
+{"tipo": "tarjeta", "nombre": "Visa BCP", "banco": "BCP", "tipo_tarjeta": "credito", "ultimos_4": "4532", "limite_credito": 5000.0, "fecha_corte": 15, "fecha_pago": 5}
+
+### consulta_tarjetas — Ver tarjetas
+{"tipo": "consulta", "periodo": "tarjetas"}
+
 ### eliminar_gasto — Borrar un gasto
 {"tipo": "eliminar_gasto", "gasto_id": 5}
 

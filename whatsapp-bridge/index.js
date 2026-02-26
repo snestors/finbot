@@ -86,11 +86,23 @@ client.on('disconnected', () => {
   client.initialize();
 });
 
-client.on('message', async (msg) => {
-  if (!msg.from.endsWith('@c.us')) return;
+client.on('message_create', async (msg) => {
+  // Skip messages from groups
+  if (!msg.from.endsWith('@c.us') && !msg.to.endsWith('@c.us')) return;
+  // Skip bot's own replies (only process user-sent messages)
+  if (msg.fromMe && msg.to.endsWith('@c.us')) {
+    // This is a message I sent TO someone, treat as user command
+    // Only if sent to the bot's own number (self-chat)
+  }
+  if (!msg.fromMe && !msg.from.endsWith('@c.us')) return;
+  // Determine the actual sender number
+  const fromNumber = msg.fromMe ? msg.to : msg.from;
+  // Only respond to our own number
+  const MY_NUMBER = process.env.MY_NUMBER || '';
+  if (MY_NUMBER && fromNumber !== MY_NUMBER && msg.from !== MY_NUMBER) return;
 
   const payload = {
-    from: msg.from,
+    from: msg.fromMe ? msg.to : msg.from,
     body: msg.body,
     timestamp: msg.timestamp,
     hasMedia: msg.hasMedia,

@@ -92,6 +92,37 @@ CREATE TABLE IF NOT EXISTS cuentas (
     activa INTEGER NOT NULL DEFAULT 1
 );
 
+
+CREATE TABLE IF NOT EXISTS cobros (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deudor TEXT NOT NULL,
+    concepto TEXT NOT NULL DEFAULT '',
+    monto_total REAL NOT NULL,
+    saldo_pendiente REAL NOT NULL,
+    moneda TEXT NOT NULL DEFAULT 'PEN',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cobro_pagos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cobro_id INTEGER NOT NULL,
+    monto REAL NOT NULL,
+    fecha TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (cobro_id) REFERENCES cobros(id)
+);
+
+CREATE TABLE IF NOT EXISTS tarjetas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    banco TEXT NOT NULL DEFAULT '',
+    tipo TEXT NOT NULL DEFAULT 'credito',
+    ultimos_4 TEXT DEFAULT '',
+    limite_credito REAL DEFAULT 0,
+    fecha_corte INTEGER DEFAULT 1,
+    fecha_pago INTEGER DEFAULT 15,
+    moneda TEXT NOT NULL DEFAULT 'PEN',
+    activa INTEGER NOT NULL DEFAULT 1
+);
 CREATE INDEX IF NOT EXISTS idx_gastos_mes ON gastos(mes);
 CREATE INDEX IF NOT EXISTS idx_gastos_semana ON gastos(semana);
 CREATE INDEX IF NOT EXISTS idx_gastos_fecha ON gastos(fecha);
