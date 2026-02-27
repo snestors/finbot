@@ -28,7 +28,18 @@ function connect() {
       const data = JSON.parse(e.data);
       if (data.type === 'system_stats') {
         useChatStore.getState().setSystemStats(data);
+      } else if (data.type === 'agent_activity') {
+        if (data.step === 'done') {
+          useChatStore.getState().clearActivity();
+        } else {
+          useChatStore.getState().addActivity({
+            step: data.step,
+            detail: data.detail || '',
+            timestamp: data.timestamp || new Date().toISOString(),
+          });
+        }
       } else if (data.type === 'new_messages') {
+        useChatStore.getState().clearActivity();
         useChatStore.setState((s) => {
           let msgs = s.messages.filter((m: any) => !m._optimistic);
           const existingIds = new Set(msgs.filter((m) => m.id).map((m) => m.id));

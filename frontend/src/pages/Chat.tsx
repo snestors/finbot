@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { get, upload } from '../api/client';
-import { useChatStore } from '../store/chatStore';
+import { useChatStore, type ActivityStep } from '../store/chatStore';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 function stripModelSuffix(text: string): { clean: string; model: string | null } {
@@ -15,8 +15,48 @@ const modelColors: Record<string, string> = {
   gemini: 'bg-blue-500/20 text-blue-400',
 };
 
+const stepIcons: Record<string, string> = {
+  routing: '\u2699',
+  routed: '\u{1F916}',
+  thinking: '\u{1F4AD}',
+  tool: '\u{1F527}',
+  action: '\u26A1',
+  media: '\u{1F4CE}',
+};
+
+function ActivityPanel({ steps }: { steps: ActivityStep[] }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const latest = steps[steps.length - 1];
+  if (!steps.length) return null;
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] md:max-w-[70%] bg-surface border border-surface-light rounded-xl rounded-bl-sm text-sm">
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="w-full flex items-center gap-2 px-3 py-2 text-left text-slate-300 hover:text-slate-100 transition-colors"
+        >
+          <span className="animate-spin inline-block w-3 h-3 border border-primary border-t-transparent rounded-full" />
+          <span className="flex-1 text-xs">{latest?.detail || 'Procesando...'}</span>
+          <span className="text-[10px] text-slate-500">{collapsed ? '\u25B6' : '\u25BC'}</span>
+        </button>
+        {!collapsed && steps.length > 1 && (
+          <div className="px-3 pb-2 space-y-0.5 border-t border-surface-light pt-1.5">
+            {steps.slice(0, -1).map((s, i) => (
+              <div key={i} className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                <span>{stepIcons[s.step] || '\u2714'}</span>
+                <span>{s.detail}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Chat() {
-  const { messages, setMessages, connected, waiting } = useChatStore();
+  const { messages, setMessages, connected, waiting, activitySteps } = useChatStore();
   const { send } = useWebSocket();
   const [input, setInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -35,7 +75,7 @@ export default function Chat() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, activitySteps]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -88,7 +128,10 @@ export default function Chat() {
             </div>
           );
         })}
-        {waiting && (
+        {waiting && activitySteps.length > 0 && (
+          <ActivityPanel steps={activitySteps} />
+        )}
+        {waiting && activitySteps.length === 0 && (
           <div className="flex justify-start">
             <div className="bg-surface border border-surface-light rounded-xl rounded-bl-sm px-4 py-2 text-sm text-slate-400">
               <span className="inline-flex gap-1">

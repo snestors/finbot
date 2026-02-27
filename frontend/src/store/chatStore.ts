@@ -26,16 +26,25 @@ export interface SystemStats {
   month_kwh?: number | null;
 }
 
+export interface ActivityStep {
+  step: string;
+  detail: string;
+  timestamp: string;
+}
+
 interface ChatState {
   messages: Message[];
   connected: boolean;
   waiting: boolean;
   systemStats: SystemStats | null;
+  activitySteps: ActivityStep[];
   setMessages: (msgs: Message[]) => void;
   addMessage: (msg: Message) => void;
   setConnected: (v: boolean) => void;
   setWaiting: (v: boolean) => void;
   setSystemStats: (stats: SystemStats) => void;
+  addActivity: (step: ActivityStep) => void;
+  clearActivity: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -43,9 +52,12 @@ export const useChatStore = create<ChatState>((set) => ({
   connected: false,
   waiting: false,
   systemStats: null,
+  activitySteps: [],
   setMessages: (messages) => set({ messages }),
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
   setConnected: (connected) => set({ connected }),
   setWaiting: (waiting) => set({ waiting }),
   setSystemStats: (systemStats) => set({ systemStats }),
+  addActivity: (step) => set((s) => ({ activitySteps: [...s.activitySteps, step] })),
+  clearActivity: () => set({ activitySteps: [] }),
 }));

@@ -27,13 +27,23 @@ class Processor:
         self.mensaje_repo = mensaje_repo
         self._message_bus = None  # Set by message_bus after init
 
+    async def _emit(self, step: str, detail: str = ""):
+        """Emit activity to web clients if message_bus is available."""
+        if self._message_bus:
+            try:
+                await self._message_bus.emit_activity(step, detail)
+            except Exception:
+                pass
+
     async def process(self, text: str, media: dict | None = None) -> ProcessResult:
         # --- MEDIA ---
         if media and media.get("mimetype"):
             mime = media["mimetype"]
             if "pdf" in mime or "spreadsheet" in mime or "excel" in mime:
+                await self._emit("media", "Procesando documento...")
                 return await self._handle_document(media)
         if media and media.get("mimetype", "").startswith("image/"):
+            await self._emit("media", "Analizando imagen...")
             return await self._handle_receipt(media)
 
         # --- TEXT ---
@@ -44,6 +54,7 @@ class Processor:
         history = await self._get_history()
 
         # 2. Route to agent
+        await self._emit("routing", "Analizando mensaje...")
         route = self.router.route(text, history)
         agent = self.registry.get(route)
 
@@ -52,11 +63,13 @@ class Processor:
             agent = self.registry.get("chat")
 
         logger.info(f"Routed '{text[:50]}' → {agent.AGENT_NAME}")
+        await self._emit("routed", f"Agente: {agent.AGENT_NAME}")
 
         # 3. Build agent-specific context
         context = await agent.build_context(repos=self.repos)
 
         # 4. Parse with agent
+        await self._emit("thinking", "Pensando...")
         result = await agent.parse(text, context=context, history=history)
 
         # 5. Execute actions (with agentic loop for tool-using agents)
@@ -71,6 +84,12 @@ class Processor:
             tool_outputs = []
 
             for accion in acciones:
+                tipo = accion.get("tipo", "?")
+                if tipo == "tool":
+                    tool_name = accion.get("name", "?")
+                    await self._emit("tool", f"Ejecutando: {tool_name}")
+                else:
+                    await self._emit("action", f"Ejecutando: {tipo}")
                 action_result = await self.executor.execute(accion)
                 if action_result.get("gasto_id"):
                     gasto_ids.append(action_result["gasto_id"])
@@ -91,6 +110,7 @@ class Processor:
 
             # Feed tool results back to the LLM for next step
             logger.info(f"[agentic-loop] iteration {loop_i + 1}, {len(tool_outputs)} tool outputs")
+            await self._emit("thinking", f"Analizando resultados (paso {loop_i + 1})...")
             followup = "RESULTADOS DE HERRAMIENTAS:\n---\n" + "\n---\n".join(tool_outputs)
             result = await agent.parse(followup, context=context, history=history)
             response = result.get("respuesta", response)
@@ -98,6 +118,7 @@ class Processor:
             if not acciones:
                 break  # Agent is done
 
+        await self._emit("done", "")
         return ProcessResult(response_text=response, gasto_ids=gasto_ids, model=model)
 
     async def _handle_receipt(self, media: dict) -> ProcessResult:

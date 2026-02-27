@@ -1,6 +1,6 @@
 #!/bin/bash
 # Auto-recovery script for FinBot.
-# Called by systemd when finbot fails to start.
+# Called by systemd ExecStopPost ONLY on actual crashes.
 # Rolls back to last git auto-checkpoint and restarts.
 
 PROJECT_DIR="/home/nestor/finbot"
@@ -8,7 +8,14 @@ LOG="/tmp/finbot-recovery.log"
 MAX_RETRIES=3
 RETRY_FILE="/tmp/finbot-recovery-count"
 
-echo "$(date): Recovery triggered" >> "$LOG"
+# Skip if this is a manual stop/restart (not a crash)
+if [ -f /tmp/finbot-manual-restart ]; then
+    rm -f /tmp/finbot-manual-restart
+    echo "$(date): Skipping recovery — manual restart detected" >> "$LOG"
+    exit 0
+fi
+
+echo "$(date): Recovery triggered (exit=$EXIT_STATUS service=$SERVICE_RESULT)" >> "$LOG"
 
 # Count retries to avoid infinite loops
 COUNT=0
