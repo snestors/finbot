@@ -380,6 +380,19 @@ async def build_admin_context(repos: dict, registry_info: list[dict] = None) -> 
     except Exception:
         pass
 
+    # Plugin info
+    try:
+        from pathlib import Path
+        plugins_dir = Path(__file__).parent.parent.parent / "plugins"
+        if plugins_dir.exists():
+            plugin_files = [f.name for f in sorted(plugins_dir.glob("*.py")) if not f.name.startswith("_")]
+            if plugin_files:
+                parts.append("Plugins instalados: " + ", ".join(plugin_files))
+            else:
+                parts.append("Plugins: ninguno instalado (crear en plugins/)")
+    except Exception:
+        pass
+
     return "\n".join(parts)
 
 

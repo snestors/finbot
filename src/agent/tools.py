@@ -20,6 +20,13 @@ BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
 FORBIDDEN_PATHS = {"/etc/shadow", "/etc/passwd", "/boot/firmware/config.txt"}
 FORBIDDEN_PREFIXES = ["/proc", "/sys/firmware"]
 
+# Core files the agent should NOT edit (to prevent self-destruction)
+CORE_FILES = {
+    "src/main.py", "src/bot/processor.py", "src/bus/message_bus.py",
+    "src/database/db.py", "src/agent/tools.py", "src/agent/plugin_manager.py",
+    "src/agents/action_executor.py", "src/agents/base_agent.py",
+}
+
 
 def _is_forbidden(filepath: str) -> bool:
     """Block truly dangerous paths. Everything else is allowed."""
@@ -27,6 +34,17 @@ def _is_forbidden(filepath: str) -> bool:
     if p in FORBIDDEN_PATHS:
         return True
     return any(p.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
+
+
+def _is_core_file(path: str) -> bool:
+    """Check if a path points to a protected core file."""
+    # Normalize to relative path
+    try:
+        p = Path(path).resolve()
+        rel = str(p.relative_to(PROJECT_ROOT))
+    except (ValueError, RuntimeError):
+        return False
+    return rel in CORE_FILES
 
 
 def _check_python_syntax(content: str) -> str | None:
@@ -130,6 +148,8 @@ class AgentTools:
         filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
         if _is_forbidden(str(filepath)):
             return f"Error: Path '{path}' is forbidden"
+        if _is_core_file(path):
+            return f"Error: '{path}' is a core file. Create a plugin in plugins/ instead."
         try:
             # Validate Python syntax before writing
             if filepath.suffix == '.py':
@@ -153,6 +173,8 @@ class AgentTools:
         filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
         if _is_forbidden(str(filepath)):
             return f"Error: Path '{path}' is forbidden"
+        if _is_core_file(path):
+            return f"Error: '{path}' is a core file. Create a plugin in plugins/ instead."
         if not filepath.exists():
             return f"Error: File '{path}' not found"
         try:

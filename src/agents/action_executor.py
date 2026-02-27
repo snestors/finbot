@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from src.agent.tools import AgentTools
+from src.agent.plugin_manager import PluginManager
 from src.config import settings
 from src.services.currency import CurrencyService, SunatTipoCambio
 
@@ -31,6 +32,10 @@ class ActionExecutor:
         self.gasto_cuota_repo = gasto_cuota_repo
         self.movimiento_cuota_repo = movimiento_cuota_repo
         self.tarjeta_periodo_repo = tarjeta_periodo_repo
+
+        # Load plugins
+        self.plugins = PluginManager()
+        self.plugins.load_all()
 
         # Handler registry
         self._handlers = {
@@ -74,12 +79,24 @@ class ActionExecutor:
         }
 
     async def execute(self, accion: dict) -> dict:
-        """Execute a single action and return result dict."""
+        """Execute a single action. Checks built-in handlers first, then plugins."""
         tipo = accion.get("tipo", "")
         handler = self._handlers.get(tipo)
+
+        # Check plugins for unknown action types
         if not handler:
+            self.plugins.reload_all()  # Hot-reload
+            plugin_handler = self.plugins.get_action_handler(tipo)
+            if plugin_handler:
+                try:
+                    return await plugin_handler(accion, self.repos)
+                except Exception as e:
+                    logger.error(f"Plugin action {tipo} error: {e}", exc_info=True)
+                    return {"data_response": f"Error en plugin {tipo}: {e}"}
+
             logger.warning(f"Unknown action type: {tipo}")
             return {}
+
         try:
             return await handler(accion)
         except Exception as e:
@@ -652,7 +669,17 @@ class ActionExecutor:
     async def _do_tool(self, accion: dict) -> dict:
         tool_name = accion.get("name", "")
         params = accion.get("params", {})
+        # Try built-in tools first
         tool_result = self.tools.execute(tool_name, params)
+        if tool_result.startswith("Error: Unknown tool"):
+            # Try plugin tools
+            self.plugins.reload_all()
+            plugin_handler = self.plugins.get_tool_handler(tool_name)
+            if plugin_handler:
+                try:
+                    tool_result = plugin_handler(params)
+                except Exception as e:
+                    tool_result = f"Plugin tool error: {e}"
         return {"data_response": tool_result}
 
     async def _do_cobro(self, accion: dict) -> dict:
