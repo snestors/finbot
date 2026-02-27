@@ -67,7 +67,14 @@ ADMIN_PATTERNS = [
     r'\b(?:estado\s+del\s+(?:sistema|servidor|rpi|raspberry))',
     r'\b(?:reinicia|restart|status|rpi)\b',
     r'\b(?:lee?\s+(?:archivo|codigo|file)|muestra.*codigo)',
-    r'\b(?:edita|modifica|cambia).*(?:codigo|archivo|prompt)',
+    r'\b(?:edita|modifica|cambia|arregla|actualiza|mejora|crea|escribe).*(?:codigo|archivo|prompt|readme|plugin)',
+
+    # File / code operations
+    r'\b(?:readme|\.md|\.py|\.ts|\.tsx|\.json)\b',
+    r'\b(?:git\s+(?:push|commit|pull|status)|push(?:ea|alo)?|commit(?:ea)?)\b',
+    r'\b(?:instala|desinstala|paquete|package|npm|pip)\b',
+    r'\b(?:plugin|herramienta|tool|funcionalidad)\b',
+    r'\b(?:programa|implementa|desarrolla|construye|programa)',
 
     # Memory
     r'\b(?:recuerda\s+que|memoriza|aprende|olvida)',
