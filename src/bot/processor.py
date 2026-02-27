@@ -78,7 +78,7 @@ class Processor:
         model = result.get("_model", "")
         gasto_ids = []
 
-        MAX_TOOL_LOOPS = 6
+        MAX_TOOL_LOOPS = 12
 
         for loop_i in range(MAX_TOOL_LOOPS):
             tool_outputs = []
@@ -112,11 +112,24 @@ class Processor:
             logger.info(f"[agentic-loop] iteration {loop_i + 1}, {len(tool_outputs)} tool outputs")
             await self._emit("thinking", f"Analizando resultados (paso {loop_i + 1})...")
             followup = "RESULTADOS DE HERRAMIENTAS:\n---\n" + "\n---\n".join(tool_outputs)
+            # On last iteration, tell the agent to wrap up
+            if loop_i == MAX_TOOL_LOOPS - 2:
+                followup += "\n\nIMPORTANTE: Este es tu ultimo paso. Resume lo que hiciste y responde al usuario."
             result = await agent.parse(followup, context=context, history=history)
             response = result.get("respuesta", response)
             acciones = result.get("acciones", [])
             if not acciones:
                 break  # Agent is done
+        else:
+            # Loop exhausted — execute any remaining actions and summarize
+            if acciones:
+                logger.warning(f"[agentic-loop] exhausted after {MAX_TOOL_LOOPS} iterations, executing final actions")
+                for accion in acciones:
+                    action_result = await self.executor.execute(accion)
+                    if action_result.get("data_response"):
+                        tool_outputs.append(action_result["data_response"])
+                if tool_outputs:
+                    response += "\n\n" + "\n\n".join(tool_outputs)
 
         await self._emit("done", "")
         return ProcessResult(response_text=response, gasto_ids=gasto_ids, model=model)
