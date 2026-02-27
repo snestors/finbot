@@ -20,7 +20,7 @@ BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
 FORBIDDEN_PATHS = {"/etc/shadow", "/etc/passwd", "/boot/firmware/config.txt"}
 FORBIDDEN_PREFIXES = ["/proc", "/sys/firmware"]
 
-# Core files the agent should NOT edit (to prevent self-destruction)
+# Core files — editable but with extra safety (checkpoint + preflight)
 CORE_FILES = {
     "src/main.py", "src/bot/processor.py", "src/bus/message_bus.py",
     "src/database/db.py", "src/agent/tools.py", "src/agent/plugin_manager.py",
@@ -61,6 +61,36 @@ def _check_python_syntax(content: str) -> str | None:
             os.unlink(f.name)
         except Exception:
             pass
+        return str(e)
+
+
+def _preflight_check() -> str | None:
+    """Try to import core modules to verify nothing is broken. Returns error or None if OK."""
+    try:
+        # Import the key modules that would break on syntax/import errors
+        check_script = (
+            "import sys; sys.path.insert(0, '.'); "
+            "from src.bot.processor import Processor; "
+            "from src.bus.message_bus import MessageBus; "
+            "from src.agents.action_executor import ActionExecutor; "
+            "from src.agents.base_agent import BaseAgent; "
+            "import src.database.db; "
+            "from src.agent.tools import AgentTools; "
+            "from src.agent.plugin_manager import PluginManager; "
+            "print('OK')"
+        )
+        result = subprocess.run(
+            [str(PROJECT_ROOT / "venv" / "bin" / "python3"), "-c", check_script],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(PROJECT_ROOT),
+        )
+        if result.returncode == 0 and "OK" in result.stdout:
+            return None
+        error = (result.stderr + result.stdout).strip()
+        return error[-500:] if len(error) > 500 else error
+    except subprocess.TimeoutExpired:
+        return "Preflight timed out"
+    except Exception as e:
         return str(e)
 
 
@@ -148,22 +178,35 @@ class AgentTools:
         filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
         if _is_forbidden(str(filepath)):
             return f"Error: Path '{path}' is forbidden"
-        if _is_core_file(path):
-            return f"Error: '{path}' is a core file. Create a plugin in plugins/ instead."
+        is_core = _is_core_file(path)
         try:
             # Validate Python syntax before writing
             if filepath.suffix == '.py':
                 syntax_err = _check_python_syntax(content)
                 if syntax_err:
                     return f"Error: Syntax error — NOT written. Fix: {syntax_err}"
+            # Git checkpoint before core file edits
+            if is_core:
+                _git_checkpoint(f"before editing core: {path}")
             # Backup existing file
+            backup_path = None
             if filepath.exists():
                 BACKUP_DIR.mkdir(parents=True, exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_name = f"{filepath.stem}_{ts}{filepath.suffix}"
-                shutil.copy2(filepath, BACKUP_DIR / backup_name)
+                backup_path = BACKUP_DIR / backup_name
+                shutil.copy2(filepath, backup_path)
             filepath.parent.mkdir(parents=True, exist_ok=True)
             filepath.write_text(content, encoding="utf-8")
+            # Preflight check for core files
+            if is_core:
+                preflight_err = _preflight_check()
+                if preflight_err:
+                    # Restore backup — the edit broke something
+                    if backup_path and backup_path.exists():
+                        shutil.copy2(backup_path, filepath)
+                    return f"Error: Core edit broke the app — REVERTED. Preflight: {preflight_err}"
+                return f"OK: Core file '{path}' written ({len(content)} chars) — preflight passed"
             return f"OK: '{path}' written ({len(content)} chars)"
         except Exception as e:
             return f"Error writing file: {e}"
@@ -173,26 +216,37 @@ class AgentTools:
         filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
         if _is_forbidden(str(filepath)):
             return f"Error: Path '{path}' is forbidden"
-        if _is_core_file(path):
-            return f"Error: '{path}' is a core file. Create a plugin in plugins/ instead."
         if not filepath.exists():
             return f"Error: File '{path}' not found"
+        is_core = _is_core_file(path)
         try:
             content = filepath.read_text(encoding="utf-8")
             if old_text not in content:
                 return f"Error: old_text not found in '{path}'. Check exact whitespace/indentation."
-            # Backup
-            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"{filepath.stem}_{ts}{filepath.suffix}"
-            shutil.copy2(filepath, BACKUP_DIR / backup_name)
             new_content = content.replace(old_text, new_text, 1)
             # Validate Python syntax
             if filepath.suffix == '.py':
                 syntax_err = _check_python_syntax(new_content)
                 if syntax_err:
                     return f"Error: Edit would break syntax — NOT saved. Fix: {syntax_err}"
+            # Git checkpoint before core file edits
+            if is_core:
+                _git_checkpoint(f"before editing core: {path}")
+            # Backup
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_name = f"{filepath.stem}_{ts}{filepath.suffix}"
+            backup_path = BACKUP_DIR / backup_name
+            shutil.copy2(filepath, backup_path)
             filepath.write_text(new_content, encoding="utf-8")
+            # Preflight check for core files
+            if is_core:
+                preflight_err = _preflight_check()
+                if preflight_err:
+                    # Restore backup — the edit broke something
+                    shutil.copy2(backup_path, filepath)
+                    return f"Error: Core edit broke the app — REVERTED. Preflight: {preflight_err}"
+                return f"OK: Core file '{path}' edited — preflight passed"
             return f"OK: Edited '{path}'"
         except Exception as e:
             return f"Error editing: {e}"
@@ -242,7 +296,11 @@ class AgentTools:
 
     @staticmethod
     def restart_service() -> str:
-        """Create git checkpoint then restart."""
+        """Preflight check + git checkpoint + restart."""
+        # Preflight — refuse to restart if the app won't start
+        preflight_err = _preflight_check()
+        if preflight_err:
+            return f"Error: Preflight FAILED — NOT restarting. Fix first: {preflight_err}"
         checkpoint = _git_checkpoint("before restart")
         cp_msg = f" (checkpoint: {checkpoint})" if checkpoint else ""
         try:
