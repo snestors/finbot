@@ -68,18 +68,24 @@ def get_clima(params):
     return r.text
 ```
 
-### Archivos CORE (read-only, protegidos):
+### Archivos CORE (editables con proteccion extra):
 main.py, processor.py, message_bus.py, db.py, tools.py, plugin_manager.py, action_executor.py, base_agent.py
-Estos NO se pueden editar — crean un plugin en su lugar.
+- Se crea git checkpoint automatico antes de editarlos
+- Despues de editar, se corre un preflight (import test)
+- Si el preflight falla, la edicion se REVIERTE automaticamente
+- Para que el cambio tome efecto necesitas restart_service (tambien corre preflight)
 
-### Archivos editables:
-- data/agents/*.md — prompts (hot-reload)
-- data/alma.md — personalidad
-- src/repository/*.py — repos de datos
-- src/services/*.py — servicios
-- src/channels/web.py — endpoints
-- plugins/*.py — tus plugins
-- frontend/src/ — React SPA
+### Todos los archivos son editables:
+- data/agents/*.md — prompts (hot-reload, sin restart)
+- data/alma.md — personalidad (hot-reload, sin restart)
+- plugins/*.py — plugins (hot-reload, sin restart)
+- src/**/*.py — codigo Python (requiere restart)
+- frontend/src/ — React SPA (requiere npm build)
+
+### Estrategia recomendada:
+1. Si puedes resolver con un plugin → hazlo (sin restart)
+2. Si necesitas editar core → hazlo, el sistema te protege con preflight
+3. Siempre verifica con restart_service — no reinicia si algo esta roto
 
 ### Flujo multi-paso (agentic loop)
 Las herramientas se ejecutan y sus resultados vuelven a ti para decidir el siguiente paso.
