@@ -90,8 +90,8 @@ class LLMClient:
                 content = msg.get("content", "")
                 if not content:
                     continue
-                if role == "assistant" and len(content) > 400:
-                    content = content[:400] + "..."
+                if role == "assistant" and len(content) > 1500:
+                    content = content[:1000] + "\n...(truncado)...\n" + content[-500:]
                 # Merge consecutive same-role messages
                 if messages and messages[-1]["role"] == role:
                     messages[-1]["content"] += "\n" + content
@@ -121,8 +121,8 @@ class LLMClient:
                 role = "Usuario" if msg.get("role") == "user" else "KYN3D"
                 content = msg.get("content", "")
                 if content:
-                    if role == "KYN3D" and len(content) > 400:
-                        content = content[:400] + "..."
+                    if role == "KYN3D" and len(content) > 1500:
+                        content = content[:1000] + "\n...(truncado)...\n" + content[-500:]
                     parts.append(f"{role}: {content}")
         parts.append(f'\nUsuario: "{user_message}"')
         return "\n".join(parts)

@@ -99,13 +99,13 @@ ADMIN_PATTERNS = [
 class MessageRouter:
     """Routes messages to the appropriate agent with zero API calls for ~85% of messages."""
 
-    def __init__(self, gemini_client=None):
-        self._gemini = gemini_client
+    def __init__(self, llm_client=None):
+        self._llm = llm_client
         self._finance_re = [re.compile(p, re.IGNORECASE) for p in FINANCE_PATTERNS]
         self._analysis_re = [re.compile(p, re.IGNORECASE) for p in ANALYSIS_PATTERNS]
         self._admin_re = [re.compile(p, re.IGNORECASE) for p in ADMIN_PATTERNS]
 
-    def route(self, text: str, history: list[dict] = None) -> str:
+    async def route(self, text: str, history: list[dict] = None) -> str:
         """Returns one of: 'finance', 'analysis', 'admin', 'chat'."""
         text_clean = text.strip()
 
@@ -141,10 +141,10 @@ class MessageRouter:
             logger.debug(f"Router: '{text_clean[:40]}' → {winner} (score=1)")
             return winner
 
-        # No match — try Gemini fallback for longer messages
-        if len(text_clean) > 30 and self._gemini:
-            result = self._gemini_classify(text)
-            logger.debug(f"Router: '{text_clean[:40]}' → {result} (gemini fallback)")
+        # No regex match → LLM fallback for non-trivial messages
+        if max_score == 0 and len(text_clean) > 5 and self._llm:
+            result = await self._llm_classify(text, history)
+            logger.debug(f"Router: '{text_clean[:40]}' → {result} (llm fallback)")
             return result
 
         logger.debug(f"Router: '{text_clean[:40]}' → chat (default)")
@@ -176,35 +176,33 @@ class MessageRouter:
                 boosted[ADMIN] += 2
         return boosted
 
-    def _gemini_classify(self, text: str) -> str:
-        """Fallback: use Gemini to classify truly ambiguous messages."""
-        try:
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in an async context, can't block. Default to chat.
-                return CHAT
-        except RuntimeError:
-            pass
+    async def _llm_classify(self, text: str, history: list[dict] = None) -> str:
+        """Async LLM classification for ambiguous messages."""
+        recent = ""
+        if history:
+            for msg in history[-3:]:
+                role = "U" if msg.get("role") == "user" else "B"
+                recent += f"{role}: {msg.get('content', '')[:100]}\n"
 
-        prompt = f"""Clasifica este mensaje en UNA categoria: finance, analysis, admin, chat
-- finance: gastos, ingresos, pagos, cuentas, tarjetas, deudas, cobros
-- analysis: consultas de cuanto llevo, resumenes, presupuestos, tipo de cambio
-- admin: recordatorios, memoria, perfil, codigo, sistema, herramientas
-- chat: conversacion casual, saludos, temas no financieros
+        prompt = f"""Clasifica en UNA categoria: finance, analysis, admin, chat
+- finance: gastos, ingresos, pagos, cuentas, tarjetas, deudas
+- analysis: consultas, resumenes, presupuestos, tipo de cambio, energía
+- admin: recordatorios, memoria, código, sistema, herramientas
+- chat: conversación casual, saludos, no financiero
 
+{f"Contexto reciente:\\n{recent}" if recent else ""}
 Mensaje: "{text}"
-Responde SOLO la categoria (una palabra):"""
+Responde SOLO la categoria:"""
 
         try:
-            response = self._gemini.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
+            response = await self._llm.generate(
+                system="Eres un clasificador de mensajes. Responde solo con una palabra.",
+                user_message=prompt,
             )
-            category = response.text.strip().lower()
+            category = response.text.strip().lower().split()[0]
             if category in (FINANCE, ANALYSIS, ADMIN, CHAT):
                 return category
         except Exception as e:
-            logger.warning(f"Router Gemini fallback failed: {e}")
+            logger.warning(f"Router LLM fallback failed: {e}")
 
         return CHAT

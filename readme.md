@@ -1,6 +1,6 @@
-# FinBot
+# KYN3D
 
-Personal finance assistant running on a Raspberry Pi. Multi-agent system with WhatsApp + web chat, IoT power monitoring, and self-programming capabilities.
+Personal finance assistant running on a Raspberry Pi. Multi-agent system with WhatsApp + web chat, IoT power monitoring, and self-programming capabilities. Built and maintained with Claude Code.
 
 ## Stack
 
@@ -41,7 +41,7 @@ Agent prompts are hot-reloadable — edit the `.md` file and changes take effect
 - **Budget alerts** — per-category spending limits with threshold notifications
 - **IoT power monitoring** — Sonoff smart plug readings every minute
 - **Plugin system** — `plugins/*.py` auto-load with hot-reload, no restart needed
-- **Self-programming** — admin agent can edit code, create plugins, consult Claude Code (Opus 4.6)
+- **Self-programming** — admin agent can edit code, create plugins, consult Claude Code
 - **Scheduled jobs** — morning greetings, weekly summaries, bill reminders, exchange rates
 - **Real-time activity stream** — web chat shows what the bot is doing step-by-step
 - **Auto-recovery** — git checkpoints before restarts, preflight checks, auto-rollback on crash
@@ -82,7 +82,7 @@ finbot/
 │   ├── bot/processor.py     # Message orchestrator + agentic loop
 │   ├── bus/message_bus.py   # Routes messages, broadcasts WS events
 │   ├── agents/
-│   │   ├── router.py        # Regex + Gemini message classification
+│   │   ├── router.py        # Regex + async LLM fallback classification
 │   │   ├── base_agent.py    # LLM parsing with retry + plain text fallback
 │   │   └── action_executor.py  # Handler registry for all action types
 │   ├── agent/

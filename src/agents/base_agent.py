@@ -79,8 +79,8 @@ class BaseAgent:
         last_model = ""
         for attempt in range(2):
             try:
-                user_msg = f'"{text}"' if attempt == 0 else (
-                    f'"{text}"\n\nSISTEMA: Tu respuesta anterior no fue JSON valido. '
+                user_msg = text if attempt == 0 else (
+                    f'{text}\n\nSISTEMA: Tu respuesta anterior no fue JSON valido. '
                     f'Responde SOLO con JSON puro: {{"respuesta": "...", "acciones": [...]}}'
                 )
                 llm_response = await self.llm.generate(

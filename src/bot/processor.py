@@ -13,6 +13,39 @@ class ProcessResult:
     has_pending_actions: bool = False
 
 
+@dataclass
+class ScratchpadEntry:
+    iteration: int
+    action: str
+    result: str
+
+
+class Scratchpad:
+    def __init__(self):
+        self.entries: list[ScratchpadEntry] = []
+
+    def add(self, iteration: int, action: str, result: str):
+        if len(result) > 500:
+            result = result[:300] + "\n...\n" + result[-200:]
+        self.entries.append(ScratchpadEntry(iteration, action, result))
+
+    def render(self) -> str:
+        if not self.entries:
+            return ""
+        lines = ["## SCRATCHPAD (lo que ya hiciste)"]
+        for e in self.entries:
+            lines.append(f"[Paso {e.iteration}] {e.action}: {e.result}")
+        return "\n".join(lines)
+
+
+# Action types that modify data → trigger context refresh
+_MUTATING_ACTIONS = {
+    "movimiento", "gasto", "ingreso", "pago_tarjeta", "transferencia",
+    "pago_deuda", "pago_cobro", "eliminar_movimiento", "actualizar_movimiento",
+    "importar_estado_cuenta",
+}
+
+
 class Processor:
     def __init__(self, router, registry, executor, repos: dict,
                  receipt_parser=None, document_parser=None,
@@ -53,9 +86,9 @@ class Processor:
         # 1. Get history
         history = await self._get_history()
 
-        # 2. Route to agent
+        # 2. Route to agent (async — may call LLM for ambiguous messages)
         await self._emit("routing", "Analizando mensaje...")
-        route = self.router.route(text, history)
+        route = await self.router.route(text, history)
         agent = self.registry.get(route)
 
         if not agent:
@@ -79,6 +112,8 @@ class Processor:
         gasto_ids = []
 
         MAX_TOOL_LOOPS = 12
+        scratchpad = Scratchpad()
+        did_mutate = False
 
         for loop_i in range(MAX_TOOL_LOOPS):
             tool_outputs = []
@@ -95,6 +130,16 @@ class Processor:
                     gasto_ids.append(action_result["gasto_id"])
                 if action_result.get("movimiento_id"):
                     gasto_ids.append(action_result["movimiento_id"])
+
+                # Track in scratchpad
+                action_label = f"tool:{accion.get('name', '?')}" if tipo == "tool" else tipo
+                result_text = action_result.get("data_response", "") or action_result.get("alert", "") or "OK"
+                scratchpad.add(loop_i, action_label, result_text)
+
+                # Track mutations for context refresh
+                if tipo in _MUTATING_ACTIONS:
+                    did_mutate = True
+
                 if action_result.get("data_response"):
                     tool_outputs.append(action_result["data_response"])
                 if action_result.get("alert"):
@@ -108,10 +153,16 @@ class Processor:
                     response += "\n\n" + "\n\n".join(tool_outputs)
                 break
 
+            # Refresh context if data changed
+            if did_mutate:
+                context = await agent.build_context(repos=self.repos)
+                did_mutate = False
+
             # Feed tool results back to the LLM for next step
             logger.info(f"[agentic-loop] iteration {loop_i + 1}, {len(tool_outputs)} tool outputs")
             await self._emit("thinking", f"Analizando resultados (paso {loop_i + 1})...")
             followup = "RESULTADOS DE HERRAMIENTAS:\n---\n" + "\n---\n".join(tool_outputs)
+            followup += "\n\n" + scratchpad.render()
             # On last iteration, tell the agent to wrap up
             if loop_i == MAX_TOOL_LOOPS - 2:
                 followup += "\n\nIMPORTANTE: Este es tu ultimo paso. Resume lo que hiciste y responde al usuario."

@@ -287,7 +287,7 @@ def run_app():
         claude_model=settings.claude_model,
     )
 
-    router = MessageRouter(gemini_client=gemini_client)  # router keeps Gemini for classification
+    router = MessageRouter(llm_client=llm)  # LLM fallback for ambiguous messages
     registry = AgentRegistry()
 
     admin_agent = AdminAgent(llm, registry=registry)
