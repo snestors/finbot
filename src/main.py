@@ -162,7 +162,15 @@ def run_app():
     from src.repository.cuenta_repo import CuentaRepo
     from src.repository.cobro_repo import CobroRepo
     from src.repository.tarjeta_repo import TarjetaRepo
-    from src.services.parser import AgentParser
+    from src.repository.memoria_repo import MemoriaRepo
+    from src.repository.recordatorio_repo import RecordatorioRepo
+    from src.repository.gasto_cuota_repo import GastoCuotaRepo
+    from src.repository.tipo_cambio_repo import TipoCambioRepo
+    from src.repository.transferencia_repo import TransferenciaRepo
+    from src.repository.pago_tarjeta_repo import PagoTarjetaRepo
+    from src.repository.movimiento_repo import MovimientoRepo
+    from src.repository.tarjeta_periodo_repo import TarjetaPeriodoRepo
+    from src.repository.movimiento_cuota_repo import MovimientoCuotaRepo
     from src.services.receipt_parser import ReceiptParser
     from src.services.document_parser import DocumentParser
     from src.services.budget import BudgetService
@@ -171,6 +179,15 @@ def run_app():
     from src.channels.web import WebSocketManager, create_app
     from src.bus.message_bus import MessageBus
     from src.bot.processor import Processor
+    from src.agents.router import MessageRouter
+    from src.agents.registry import AgentRegistry
+    from src.agents.finance_agent import FinanceAgent
+    from src.agents.analysis_agent import AnalysisAgent
+    from src.agents.admin_agent import AdminAgent
+    from src.agents.chat_agent import ChatAgent
+    from src.agents.action_executor import ActionExecutor
+    from src.llm import LLMClient
+    from google import genai
 
     logging.basicConfig(
         level=logging.INFO,
@@ -226,29 +243,93 @@ def run_app():
     cuenta_repo = CuentaRepo()
     cobro_repo = CobroRepo()
     tarjeta_repo = TarjetaRepo()
+    memoria_repo = MemoriaRepo()
+    recordatorio_repo = RecordatorioRepo()
+    gasto_cuota_repo = GastoCuotaRepo()
+    tipo_cambio_repo = TipoCambioRepo()
+    transferencia_repo = TransferenciaRepo()
+    pago_tarjeta_repo = PagoTarjetaRepo()
+    movimiento_repo = MovimientoRepo()
+    tarjeta_periodo_repo = TarjetaPeriodoRepo()
+    movimiento_cuota_repo = MovimientoCuotaRepo()
 
-    agent_parser = AgentParser(api_key=settings.google_ai_api_key)
     receipt_parser = ReceiptParser(api_key=settings.google_ai_api_key)
     document_parser = DocumentParser(api_key=settings.google_ai_api_key)
-    budget_service = BudgetService(presupuesto_repo=presupuesto_repo, gasto_repo=gasto_repo, perfil_repo=perfil_repo)
+    budget_service = BudgetService(presupuesto_repo=presupuesto_repo, gasto_repo=gasto_repo,
+                                    perfil_repo=perfil_repo, movimiento_repo=movimiento_repo)
+
+    from src.services.currency import CurrencyService, SunatTipoCambio
+    currency_service = CurrencyService()
+    sunat_service = SunatTipoCambio(tipo_cambio_repo=tipo_cambio_repo)
+
+    from src.repository.consumo_repo import ConsumoRepo
+    from src.repository.pago_consumo_repo import PagoConsumoRepo
+    from src.repository.consumo_config_repo import ConsumoConfigRepo
+    from src.services.sonoff import SonoffService
+    consumo_repo = ConsumoRepo()
+    pago_consumo_repo = PagoConsumoRepo()
+    consumo_config_repo = ConsumoConfigRepo()
+    sonoff_service = SonoffService(
+        device_id="10027d4fc7",
+        device_key="42224a14-5704-4167-96d2-516df73614e5",
+    )
 
     whatsapp = WhatsAppChannel()
     ws_manager = WebSocketManager()
 
-    processor = Processor(
-        agent_parser=agent_parser,
-        receipt_parser=receipt_parser,
-        gasto_repo=gasto_repo,
-        ingreso_repo=ingreso_repo,
+    # ---- Multi-Agent System ----
+    gemini_client = genai.Client(api_key=settings.google_ai_api_key)
+
+    # Claude primary + Gemini fallback
+    llm = LLMClient(
+        claude_token=settings.claude_api_token,
+        gemini_client=gemini_client,
+        claude_model=settings.claude_model,
+    )
+
+    router = MessageRouter(gemini_client=gemini_client)  # router keeps Gemini for classification
+    registry = AgentRegistry()
+
+    admin_agent = AdminAgent(llm, registry=registry)
+    registry.register("finance", FinanceAgent(llm))
+    registry.register("analysis", AnalysisAgent(llm))
+    registry.register("admin", admin_agent)
+    registry.register("chat", ChatAgent(llm))
+
+    repos = {
+        "gasto": gasto_repo, "ingreso": ingreso_repo, "deuda": deuda_repo,
+        "presupuesto": presupuesto_repo, "perfil": perfil_repo, "cuenta": cuenta_repo,
+        "cobro": cobro_repo, "tarjeta": tarjeta_repo, "memoria": memoria_repo,
+        "recordatorio": recordatorio_repo, "mensaje": mensaje_repo,
+        "transferencia": transferencia_repo, "pago_tarjeta": pago_tarjeta_repo,
+        "movimiento": movimiento_repo, "tarjeta_periodo": tarjeta_periodo_repo,
+        "movimiento_cuota": movimiento_cuota_repo,
+        "consumo": consumo_repo, "pago_consumo": pago_consumo_repo,
+        "consumo_config": consumo_config_repo,
+        "sonoff_service": sonoff_service,
+    }
+
+    from src.agent.tools import AgentTools
+    executor = ActionExecutor(
+        repos=repos,
+        tools=AgentTools(),
+        currency_service=currency_service,
+        sunat_service=sunat_service,
         budget_service=budget_service,
-        deuda_repo=deuda_repo,
-        perfil_repo=perfil_repo,
-        cuenta_repo=cuenta_repo,
-        presupuesto_repo=presupuesto_repo,
-        mensaje_repo=mensaje_repo,
+        gasto_cuota_repo=gasto_cuota_repo,
+        movimiento_cuota_repo=movimiento_cuota_repo,
+        tarjeta_periodo_repo=tarjeta_periodo_repo,
+    )
+
+    processor = Processor(
+        router=router,
+        registry=registry,
+        executor=executor,
+        repos=repos,
+        receipt_parser=receipt_parser,
         document_parser=document_parser,
-        cobro_repo=cobro_repo,
-        tarjeta_repo=tarjeta_repo,
+        budget_service=budget_service,
+        mensaje_repo=mensaje_repo,
     )
 
     message_bus = MessageBus(
@@ -265,7 +346,15 @@ def run_app():
         budget_service=budget_service,
         perfil_repo=perfil_repo,
         cobro_repo=cobro_repo,
+        recordatorio_repo=recordatorio_repo,
+        tarjeta_repo=tarjeta_repo,
+        sunat_service=sunat_service,
+        tipo_cambio_repo=tipo_cambio_repo,
         timezone=settings.timezone,
+        movimiento_repo=movimiento_repo,
+        tarjeta_periodo_repo=tarjeta_periodo_repo,
+        sonoff_service=sonoff_service,
+        consumo_repo=consumo_repo,
     )
 
     # ---- Lifespan ----
@@ -273,9 +362,11 @@ def run_app():
     async def lifespan(app):
         await init_db()
         logger.info("SQLite database ready")
+        await sonoff_service.start()
         scheduler.start()
         yield
         scheduler.stop()
+        await sonoff_service.stop()
         await whatsapp.close()
         await close_db()
         logger.info("Cleanup complete")
@@ -291,11 +382,24 @@ def run_app():
         cuenta_repo=cuenta_repo,
         cobro_repo=cobro_repo,
         tarjeta_repo=tarjeta_repo,
-        currency_service=processor.currency,
-        sunat_service=processor.sunat,
+        currency_service=currency_service,
+        sunat_service=sunat_service,
+        gasto_cuota_repo=gasto_cuota_repo,
+        tipo_cambio_repo=tipo_cambio_repo,
+        memoria_repo=memoria_repo,
+        recordatorio_repo=recordatorio_repo,
+        transferencia_repo=transferencia_repo,
+        pago_tarjeta_repo=pago_tarjeta_repo,
         whatsapp_channel=whatsapp,
         ws_manager=ws_manager,
         lifespan=lifespan,
+        movimiento_repo=movimiento_repo,
+        tarjeta_periodo_repo=tarjeta_periodo_repo,
+        movimiento_cuota_repo=movimiento_cuota_repo,
+        sonoff_service=sonoff_service,
+        consumo_repo=consumo_repo,
+        pago_consumo_repo=pago_consumo_repo,
+        consumo_config_repo=consumo_config_repo,
     )
 
     # ---- Start ----

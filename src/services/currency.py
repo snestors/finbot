@@ -83,9 +83,10 @@ class SunatTipoCambio:
     SUNAT_URL = "https://api.apis.net.pe/v2/sunat/tipo-cambio"
     TOKEN = "apis-token-11526.ogNVdWq1ZL7S4SjfUIbz5xyAnlXulamA"
 
-    def __init__(self):
+    def __init__(self, tipo_cambio_repo=None):
         self._cache: dict = {}
         self._last_fetch: float = 0
+        self._tipo_cambio_repo = tipo_cambio_repo
 
     async def get_tipo_cambio(self) -> dict:
         if self._cache and (time.time() - self._last_fetch) < 3600:
@@ -106,6 +107,16 @@ class SunatTipoCambio:
                     }
                     self._last_fetch = time.time()
                     logger.info(f"SUNAT tipo cambio: compra={self._cache['compra']} venta={self._cache['venta']}")
+                    # Persist to history
+                    if self._tipo_cambio_repo and self._cache.get("fecha"):
+                        try:
+                            await self._tipo_cambio_repo.save(
+                                fecha=self._cache["fecha"],
+                                compra=self._cache["compra"],
+                                venta=self._cache["venta"],
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to persist exchange rate: {e}")
                     return self._cache
         except Exception as e:
             logger.warning(f"Error fetching SUNAT tipo cambio: {e}")

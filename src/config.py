@@ -5,7 +5,9 @@ class Settings(BaseSettings):
     # Database
     db_path: str = "data/finbot.db"
 
-    # Gemini
+    # LLM — Claude (primary) + Gemini (fallback)
+    claude_api_token: str = ""
+    claude_model: str = "claude-sonnet-4-6"
     google_ai_api_key: str = ""
 
     # Server

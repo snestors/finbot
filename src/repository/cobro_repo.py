@@ -28,15 +28,17 @@ class CobroRepo:
         await db.commit()
         return cursor.lastrowid
 
-    async def registrar_pago(self, cobro_id: int, monto: float) -> dict:
+    async def registrar_pago(self, cobro_id: int, monto: float,
+                             cuenta_id: int = None, monto_cuenta: float = None) -> dict:
         db = await get_db()
         await db.execute(
             "UPDATE cobros SET saldo_pendiente = MAX(0, saldo_pendiente - ?) WHERE id = ?",
             (monto, cobro_id)
         )
+        mc = monto_cuenta if monto_cuenta is not None else monto
         await db.execute(
-            "INSERT INTO cobro_pagos (cobro_id, monto) VALUES (?, ?)",
-            (cobro_id, monto)
+            "INSERT INTO cobro_pagos (cobro_id, monto, cuenta_id, monto_cuenta) VALUES (?, ?, ?, ?)",
+            (cobro_id, monto, cuenta_id, mc)
         )
         await db.commit()
         row = await db.execute_fetchone("SELECT * FROM cobros WHERE id = ?", (cobro_id,))
@@ -65,6 +67,25 @@ class CobroRepo:
             total += r["saldo_pendiente"]
         lines.append(f"  Total por cobrar: S/{total:.2f}")
         return "\n".join(lines)
+
+    async def get_pagos(self, cobro_id: int) -> list[dict]:
+        """Get payment history for a cobro, ordered by date DESC."""
+        db = await get_db()
+        cursor = await db.execute(
+            """SELECT cp.*, c.nombre as cuenta_nombre
+               FROM cobro_pagos cp
+               LEFT JOIN cuentas c ON c.id = cp.cuenta_id
+               WHERE cp.cobro_id = ? ORDER BY cp.fecha DESC""",
+            (cobro_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_all_with_pagos(self, solo_pendientes: bool = True) -> list[dict]:
+        """Get all cobros with their payment history included."""
+        cobros = await self.get_all(solo_pendientes=solo_pendientes)
+        for cobro in cobros:
+            cobro["pagos"] = await self.get_pagos(cobro["id"])
+        return cobros
 
     async def delete(self, cobro_id: int):
         db = await get_db()

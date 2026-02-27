@@ -9,7 +9,11 @@ CURRENCY_SYMBOLS = {"PEN": "S/", "USD": "$", "EUR": "€"}
 class SchedulerService:
     def __init__(self, message_bus, gasto_repo, presupuesto_repo=None,
                  budget_service=None, perfil_repo=None, cobro_repo=None,
-                 timezone: str = "America/Lima"):
+                 recordatorio_repo=None, tarjeta_repo=None,
+                 sunat_service=None, tipo_cambio_repo=None,
+                 timezone: str = "America/Lima",
+                 movimiento_repo=None, tarjeta_periodo_repo=None,
+                 sonoff_service=None, consumo_repo=None):
         self.scheduler = AsyncIOScheduler(timezone=timezone)
         self.bus = message_bus
         self.gasto_repo = gasto_repo
@@ -17,6 +21,14 @@ class SchedulerService:
         self.budget_service = budget_service
         self.perfil_repo = perfil_repo
         self.cobro_repo = cobro_repo
+        self.recordatorio_repo = recordatorio_repo
+        self.tarjeta_repo = tarjeta_repo
+        self.sunat_service = sunat_service
+        self.tipo_cambio_repo = tipo_cambio_repo
+        self.movimiento_repo = movimiento_repo
+        self.tarjeta_periodo_repo = tarjeta_periodo_repo
+        self.sonoff_service = sonoff_service
+        self.consumo_repo = consumo_repo
 
     async def _get_user_name(self) -> str:
         if self.perfil_repo:
@@ -105,21 +117,66 @@ class SchedulerService:
             id="alerta_inactividad",
         )
 
+        # Daily exchange rate persistence at 10:30 AM
+        if self.sunat_service:
+            self.scheduler.add_job(
+                self._persistir_tipo_cambio,
+                "cron",
+                hour=10,
+                minute=30,
+                id="tipo_cambio_diario",
+            )
+
+        # Credit card payment alerts at 9:30 AM
+        if self.tarjeta_repo:
+            self.scheduler.add_job(
+                self._alerta_pago_tarjeta,
+                "cron",
+                hour=9,
+                minute=30,
+                id="alerta_pago_tarjeta",
+            )
+
+        # Custom reminders - check every minute
+        if self.recordatorio_repo:
+            self.scheduler.add_job(
+                self._check_recordatorios,
+                "cron",
+                minute="*",
+                id="check_recordatorios",
+            )
+
+        # Sonoff 5-minute reading save
+        if self.sonoff_service and self.consumo_repo:
+            self.scheduler.add_job(
+                self._guardar_lectura_sonoff,
+                "interval",
+                minutes=1,
+                id="sonoff_1min",
+            )
+
+        # Facturar periodos de tarjeta at 00:30 daily
+        if self.tarjeta_periodo_repo and self.tarjeta_repo:
+            self.scheduler.add_job(
+                self._facturar_periodos,
+                "cron",
+                hour=0,
+                minute=30,
+                id="facturar_periodos",
+            )
+
         self.scheduler.start()
         jobs = [j.id for j in self.scheduler.get_jobs()]
         logger.info(f"Scheduler started with jobs: {jobs}")
 
+    def _get_mov_or_gasto_repo(self):
+        """Prefer movimiento_repo, fallback to gasto_repo."""
+        return self.movimiento_repo or self.gasto_repo
+
     # --- Morning greeting ---
     async def _saludo_manana(self):
         nombre = await self._get_user_name()
-        sym = await self._get_currency_symbol()
         saludo = f"Buenos dias {nombre}!" if nombre else "Buenos dias!"
-
-        try:
-            gastos_ayer = await self.gasto_repo.resumen_hoy()  # yesterday context
-        except Exception:
-            gastos_ayer = ""
-
         msg = f"{saludo} Nuevo dia, recuerda registrar tus gastos. Si necesitas algo, aqui estoy."
         await self.bus.send_proactive(msg)
 
@@ -130,7 +187,8 @@ class SchedulerService:
         epa = f"Epa {nombre}!" if nombre else "Epa!"
 
         try:
-            gastos = await self.gasto_repo.get_today()
+            repo = self._get_mov_or_gasto_repo()
+            gastos = await (repo.get_gastos_hoy() if hasattr(repo, 'get_gastos_hoy') else repo.get_today())
             total = sum(g["monto"] for g in gastos)
         except Exception:
             gastos = []
@@ -196,14 +254,16 @@ class SchedulerService:
     async def _resumen_semanal(self):
         nombre = await self._get_user_name()
         saludo = f"Hey {nombre}," if nombre else "Hey,"
-        text = await self.gasto_repo.resumen_semana()
+        repo = self._get_mov_or_gasto_repo()
+        text = await repo.resumen_semana()
         await self.bus.send_proactive(f"{saludo} resumen semanal:\n{text}")
 
     # --- Monthly summary ---
     async def _resumen_mensual(self):
         nombre = await self._get_user_name()
         saludo = f"Hola {nombre}!" if nombre else "Hola!"
-        text = await self.gasto_repo.resumen_mes()
+        repo = self._get_mov_or_gasto_repo()
+        text = await repo.resumen_mes()
         await self.bus.send_proactive(f"{saludo} Resumen del mes anterior:\n{text}")
 
     # --- Budget alerts ---
@@ -224,7 +284,8 @@ class SchedulerService:
     # --- 9 PM inactivity nudge ---
     async def _alerta_inactividad(self):
         try:
-            gastos = await self.gasto_repo.get_today()
+            repo = self._get_mov_or_gasto_repo()
+            gastos = await (repo.get_gastos_hoy() if hasattr(repo, 'get_gastos_hoy') else repo.get_today())
             if not gastos:
                 nombre = await self._get_user_name()
                 if nombre:
@@ -234,6 +295,134 @@ class SchedulerService:
                 await self.bus.send_proactive(msg)
         except Exception as e:
             logger.error(f"Error checking inactivity: {e}")
+
+    # --- Custom reminders ---
+    async def _check_recordatorios(self):
+        if not self.recordatorio_repo:
+            return
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo(self.scheduler.timezone.key))
+            current_time = now.strftime("%H:%M")
+            current_dow = ["lun", "mar", "mie", "jue", "vie", "sab", "dom"][now.weekday()]
+            current_day = str(now.day)
+
+            recordatorios = await self.recordatorio_repo.get_activos()
+            for r in recordatorios:
+                if r["hora"] != current_time:
+                    continue
+                dias = r["dias"]
+                # Check if today matches
+                if dias == "todos":
+                    pass  # always send
+                elif dias.isdigit() or ("," in dias and all(d.strip().isdigit() for d in dias.split(","))):
+                    # Day-of-month: "15" or "1,15"
+                    day_list = [d.strip() for d in dias.split(",")]
+                    if current_day not in day_list:
+                        continue
+                else:
+                    # Day-of-week: "lun,mie,vie"
+                    dow_list = [d.strip().lower() for d in dias.split(",")]
+                    if current_dow not in dow_list:
+                        continue
+
+                nombre = await self._get_user_name()
+                prefix = f"{nombre}, " if nombre else ""
+                await self.bus.send_proactive(f"{prefix}recordatorio: {r['mensaje']}")
+
+        except Exception as e:
+            logger.error(f"Error checking recordatorios: {e}")
+
+    # --- Daily exchange rate persistence ---
+    async def _persistir_tipo_cambio(self):
+        if not self.sunat_service:
+            return
+        try:
+            await self.sunat_service.get_tipo_cambio()
+            logger.info("Daily exchange rate persisted")
+        except Exception as e:
+            logger.error(f"Error persisting exchange rate: {e}")
+
+    # --- Credit card payment alerts ---
+    async def _alerta_pago_tarjeta(self):
+        if not self.tarjeta_repo:
+            return
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            today = datetime.now(ZoneInfo(self.scheduler.timezone.key)).date()
+            tarjetas = await self.tarjeta_repo.get_all()
+            alertas = []
+            for t in tarjetas:
+                if t.get("tipo") != "credito":
+                    continue
+                period = self.tarjeta_repo.get_billing_period(t, today)
+                from datetime import date
+                fecha_pago = date.fromisoformat(period["fecha_pago"])
+                dias_para_pago = (fecha_pago - today).days
+                usado = t.get("saldo_usado", 0) or 0
+                if usado <= 0:
+                    continue
+                if dias_para_pago == 3:
+                    alertas.append(f"  - {t['nombre']} (*{t['ultimos_4']}): pago en 3 dias (dia {fecha_pago.day}), saldo S/{usado:.2f}")
+                elif dias_para_pago == 0:
+                    alertas.append(f"  - {t['nombre']} (*{t['ultimos_4']}): HOY vence el pago, saldo S/{usado:.2f}")
+
+            if alertas:
+                nombre = await self._get_user_name()
+                prefix = f"{nombre}, " if nombre else ""
+                msg = f"{prefix}alerta de tarjetas de credito:\n" + "\n".join(alertas)
+                await self.bus.send_proactive(msg)
+        except Exception as e:
+            logger.error(f"Error checking tarjeta payments: {e}")
+
+    # --- Facturar periodos de tarjeta ---
+    async def _facturar_periodos(self):
+        """Close billing periods on their corte day. Runs daily at 00:30."""
+        if not self.tarjeta_periodo_repo or not self.tarjeta_repo or not self.movimiento_repo:
+            return
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            today = datetime.now(ZoneInfo(self.scheduler.timezone.key)).date()
+            dia_hoy = today.day
+
+            # Find open periods whose tarjeta has fecha_corte == today
+            periodos = await self.tarjeta_periodo_repo.get_abiertos_para_facturar(dia_hoy)
+            for p in periodos:
+                tarjeta_id = p["tarjeta_id"]
+                # Sum all gastos in this period
+                from src.database.db import get_db
+                db = await get_db()
+                cursor = await db.execute(
+                    """SELECT COALESCE(SUM(monto), 0) FROM movimientos
+                       WHERE tarjeta_id = ? AND tipo = 'gasto'
+                       AND fecha >= ? AND fecha <= ?""",
+                    (tarjeta_id, p["fecha_inicio"], p["fecha_fin"]),
+                )
+                total = (await cursor.fetchone())[0]
+                await self.tarjeta_periodo_repo.facturar(p["id"], total)
+                logger.info(f"Facturado periodo {p['periodo']} tarjeta #{tarjeta_id}: {total}")
+        except Exception as e:
+            logger.error(f"Error facturando periodos: {e}")
+
+    # --- Sonoff 5-minute reading ---
+    async def _guardar_lectura_sonoff(self):
+        if not self.sonoff_service or not self.consumo_repo:
+            return
+        try:
+            data = self.sonoff_service.latest
+            if data:
+                await self.consumo_repo.save_5min_sonoff(
+                    power_w=data.get("power_w", 0),
+                    voltage_v=data.get("voltage_v", 0),
+                    current_a=data.get("current_a", 0),
+                    day_kwh=data.get("day_kwh", 0),
+                    month_kwh=data.get("month_kwh", 0),
+                )
+        except Exception as e:
+            logger.error(f"Error saving Sonoff reading: {e}")
 
     def stop(self):
         self.scheduler.shutdown()

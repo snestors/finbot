@@ -1,8 +1,11 @@
 import json
+import os
+import asyncio
 import base64
 import logging
 import traceback
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from pathlib import Path
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -38,17 +41,24 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                presupuesto_repo, deuda_repo, whatsapp_channel, ws_manager,
                perfil_repo=None, cuenta_repo=None, cobro_repo=None,
                tarjeta_repo=None, currency_service=None, sunat_service=None,
-               lifespan=None) -> FastAPI:
+               gasto_cuota_repo=None, tipo_cambio_repo=None,
+               memoria_repo=None, recordatorio_repo=None,
+               transferencia_repo=None, pago_tarjeta_repo=None,
+               lifespan=None,
+               movimiento_repo=None, tarjeta_periodo_repo=None,
+               movimiento_cuota_repo=None,
+               sonoff_service=None, consumo_repo=None,
+               pago_consumo_repo=None, consumo_config_repo=None) -> FastAPI:
 
     app = FastAPI(title="FinBot", docs_url="/api/docs", lifespan=lifespan)
 
     # --- Auth middleware ---
     app.add_middleware(AuthMiddleware)
 
-    # --- Login page ---
+    # --- Login page (served by React SPA) ---
     @app.get("/login")
     async def login_page():
-        return FileResponse("web/login.html")
+        return FileResponse("web/index.html")
 
     # --- Login ---
     @app.post("/api/login")
@@ -65,6 +75,13 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await ws_manager.connect(websocket)
+        _ensure_stats_loop()
+        # Send stats immediately on connect
+        try:
+            stats = await _read_system_stats()
+            await websocket.send_json({"type": "system_stats", **stats})
+        except Exception:
+            pass
         try:
             while True:
                 data = await websocket.receive_text()
@@ -110,13 +127,13 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
 
     # --- Upload receipt photo from web ---
     @app.post("/api/upload-receipt")
-    async def upload_receipt(file: UploadFile = File(...)):
+    async def upload_receipt(file: UploadFile = File(...), text: str = Form("")):
         content = await file.read()
         media = {
             "mimetype": file.content_type,
             "data": base64.b64encode(content).decode(),
         }
-        await message_bus.handle_incoming(text="", media=media, source="web")
+        await message_bus.handle_incoming(text=text, media=media, source="web")
         return {"ok": True}
 
     # --- Chat history ---
@@ -124,41 +141,87 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
     async def get_mensajes(limit: int = 50, before: int = None):
         return await mensaje_repo.get_history(limit=limit, before=before)
 
-    # --- Gastos ---
+    # --- Movimientos (unified) ---
+    @app.get("/api/movimientos")
+    async def get_movimientos(mes: str = None, tipo: str = None,
+                              cuenta_id: int = None, tarjeta_id: int = None):
+        if not movimiento_repo:
+            return []
+        if cuenta_id:
+            return await movimiento_repo.get_by_cuenta(cuenta_id, mes, tipo)
+        if tarjeta_id:
+            return await movimiento_repo.get_by_tarjeta(tarjeta_id, mes)
+        return await movimiento_repo.get_by_month(mes, tipo)
+
+    @app.get("/api/movimientos/hoy")
+    async def get_movimientos_hoy(tipo: str = None):
+        if not movimiento_repo:
+            return []
+        return await movimiento_repo.get_today(tipo)
+
+    @app.delete("/api/movimientos/{mov_id}")
+    async def delete_movimiento(mov_id: int):
+        if not movimiento_repo:
+            return {"error": "Movimientos no disponible"}
+        await movimiento_repo.delete(mov_id)
+        return {"ok": True}
+
+    # --- Gastos (legacy aliases → movimientos) ---
     @app.get("/api/gastos")
-    async def get_gastos(mes: str = None):
+    async def get_gastos(mes: str = None, cuenta_id: int = None, tarjeta_id: int = None):
+        if movimiento_repo:
+            if cuenta_id:
+                return await movimiento_repo.get_by_cuenta(cuenta_id, mes, "gasto")
+            if tarjeta_id:
+                return await movimiento_repo.get_by_tarjeta(tarjeta_id, mes)
+            return await movimiento_repo.get_by_tipo("gasto", mes)
+        if cuenta_id:
+            return await gasto_repo.get_by_cuenta(cuenta_id, mes)
+        if tarjeta_id:
+            return await gasto_repo.get_by_tarjeta(tarjeta_id, mes)
         return await gasto_repo.get_by_month(mes)
 
     @app.get("/api/gastos/hoy")
     async def get_gastos_hoy():
+        if movimiento_repo:
+            return await movimiento_repo.get_gastos_hoy()
         return await gasto_repo.get_today()
 
     @app.delete("/api/gastos/{gasto_id}")
     async def delete_gasto(gasto_id: int):
-        await gasto_repo.delete(gasto_id)
+        if movimiento_repo:
+            await movimiento_repo.delete(gasto_id)
+        else:
+            await gasto_repo.delete(gasto_id)
         return {"ok": True}
 
-    # --- Ingresos ---
+    # --- Ingresos (legacy alias → movimientos) ---
     @app.get("/api/ingresos")
     async def get_ingresos(mes: str = None):
+        if movimiento_repo:
+            return await movimiento_repo.get_ingresos_mes(mes)
         return await ingreso_repo.get_by_month(mes)
 
     # --- Resúmenes ---
     @app.get("/api/resumen/diario")
     async def resumen_diario():
-        return {"text": await gasto_repo.resumen_hoy()}
+        repo = movimiento_repo or gasto_repo
+        return {"text": await repo.resumen_hoy()}
 
     @app.get("/api/resumen/semanal")
     async def resumen_semanal():
-        return {"text": await gasto_repo.resumen_semana()}
+        repo = movimiento_repo or gasto_repo
+        return {"text": await repo.resumen_semana()}
 
     @app.get("/api/resumen/mensual")
     async def resumen_mensual():
-        return {"text": await gasto_repo.resumen_mes()}
+        repo = movimiento_repo or gasto_repo
+        return {"text": await repo.resumen_mes()}
 
     @app.get("/api/resumen/categorias")
     async def resumen_categorias(mes: str = None):
-        return await gasto_repo.resumen_categorias(mes)
+        repo = movimiento_repo or gasto_repo
+        return await repo.resumen_categorias(mes)
 
     # --- Presupuestos ---
     @app.get("/api/presupuestos")
@@ -193,6 +256,13 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         await deuda_repo.registrar_pago(deuda_id, data["monto"])
         return {"ok": True}
 
+    @app.get("/api/deudas/{deuda_id}/pagos")
+    async def get_deuda_pagos(deuda_id: int):
+        deuda = await deuda_repo.get_by_id(deuda_id)
+        if not deuda:
+            return []
+        return deuda.get("pagos", [])
+
     # --- Perfil ---
     @app.get("/api/perfil")
     async def get_perfil():
@@ -222,6 +292,14 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         doc_id = await cuenta_repo.save(data)
         return {"id": doc_id}
 
+    @app.put("/api/cuentas/{cuenta_id}")
+    async def update_cuenta(cuenta_id: int, data: dict):
+        if not cuenta_repo:
+            return {"error": "Cuentas no disponible"}
+        data["id"] = cuenta_id
+        doc_id = await cuenta_repo.save(data)
+        return {"id": doc_id}
+
     @app.delete("/api/cuentas/{cuenta_id}")
     async def delete_cuenta(cuenta_id: int):
         if not cuenta_repo:
@@ -229,14 +307,73 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         await cuenta_repo.delete(cuenta_id)
         return {"ok": True}
 
+    @app.get("/api/cuentas/{cuenta_id}/movimientos")
+    async def get_cuenta_movimientos(cuenta_id: int, mes: str = None):
+        """All movements for an account with enriched names."""
+        if movimiento_repo:
+            from src.database.db import get_db
+            db = await get_db()
+            q = """SELECT m.*,
+                          co.nombre as cuenta_origen,
+                          cd.nombre as cuenta_destino,
+                          t.nombre as tarjeta_nombre
+                   FROM movimientos m
+                   LEFT JOIN cuentas co ON co.id = m.cuenta_id
+                   LEFT JOIN cuentas cd ON cd.id = m.cuenta_destino_id
+                   LEFT JOIN tarjetas t ON t.id = m.tarjeta_id
+                   WHERE (m.cuenta_id = ? OR m.cuenta_destino_id = ?)"""
+            params: list = [cuenta_id, cuenta_id]
+            if mes:
+                q += " AND m.mes = ?"
+                params.append(mes)
+            q += " ORDER BY m.fecha DESC"
+            cursor = await db.execute(q, params)
+            return [dict(r) for r in await cursor.fetchall()]
+        # Legacy fallback
+        movimientos = []
+        for g in await gasto_repo.get_by_cuenta(cuenta_id, mes):
+            g["_tipo"] = "gasto"
+            movimientos.append(g)
+        from src.database.db import get_db as get_db_legacy
+        db = await get_db_legacy()
+        q = "SELECT * FROM ingresos WHERE cuenta_id = ?"
+        params_legacy = [cuenta_id]
+        if mes:
+            q += " AND mes = ?"
+            params_legacy.append(mes)
+        cursor = await db.execute(q + " ORDER BY fecha DESC", params_legacy)
+        for r in await cursor.fetchall():
+            d = dict(r)
+            d["_tipo"] = "ingreso"
+            movimientos.append(d)
+        if transferencia_repo:
+            for t in await transferencia_repo.get_by_cuenta(cuenta_id):
+                t["_tipo"] = "transferencia"
+                movimientos.append(t)
+        if pago_tarjeta_repo:
+            for p in await pago_tarjeta_repo.get_by_cuenta(cuenta_id):
+                p["_tipo"] = "pago_tarjeta"
+                movimientos.append(p)
+        movimientos.sort(key=lambda x: x.get("fecha", ""), reverse=True)
+        return movimientos
+
+    # --- Transferencias ---
+    @app.get("/api/transferencias")
+    async def get_transferencias():
+        if not transferencia_repo:
+            return []
+        return await transferencia_repo.get_all()
+
     # --- Dashboard extras ---
     @app.get("/api/dashboard/top-comercios")
     async def top_comercios(mes: str = None):
-        return await gasto_repo.top_comercios(mes)
+        repo = movimiento_repo or gasto_repo
+        return await repo.top_comercios(mes)
 
     @app.get("/api/dashboard/metodos-pago")
     async def metodos_pago(mes: str = None):
-        return await gasto_repo.metodo_pago_breakdown(mes)
+        repo = movimiento_repo or gasto_repo
+        return await repo.metodo_pago_breakdown(mes)
 
     # --- WhatsApp status ---
     @app.get("/api/whatsapp/qr")
@@ -249,9 +386,11 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
 
     # --- Cobros ---
     @app.get("/api/cobros")
-    async def get_cobros():
+    async def get_cobros(include_pagos: bool = False):
         if not cobro_repo:
             return []
+        if include_pagos:
+            return await cobro_repo.get_all_with_pagos()
         return await cobro_repo.get_all()
 
     @app.post("/api/cobros")
@@ -260,6 +399,12 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
             return {"error": "Cobros no disponible"}
         doc_id = await cobro_repo.save(data)
         return {"id": doc_id}
+
+    @app.get("/api/cobros/{cobro_id}/pagos")
+    async def get_cobro_pagos(cobro_id: int):
+        if not cobro_repo:
+            return []
+        return await cobro_repo.get_pagos(cobro_id)
 
     @app.post("/api/cobros/{cobro_id}/pago")
     async def cobro_pago(cobro_id: int, data: dict):
@@ -289,6 +434,77 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         doc_id = await tarjeta_repo.save(data)
         return {"id": doc_id}
 
+    @app.get("/api/tarjetas/{tarjeta_id}/periodos")
+    async def get_tarjeta_periodos(tarjeta_id: int):
+        """Get all billing periods for a credit card."""
+        if not tarjeta_periodo_repo:
+            return []
+        return await tarjeta_periodo_repo.get_by_tarjeta(tarjeta_id)
+
+    @app.get("/api/tarjetas/{tarjeta_id}/estado-cuenta")
+    async def get_estado_cuenta(tarjeta_id: int):
+        """Get current billing statement for a credit card."""
+        if not tarjeta_repo:
+            return {"error": "Tarjetas no disponible"}
+        tarjeta = await tarjeta_repo.get_by_id(tarjeta_id)
+        if not tarjeta:
+            return {"error": "Tarjeta no encontrada"}
+        period = tarjeta_repo.get_billing_period(tarjeta)
+        # Use movimientos if available
+        if movimiento_repo:
+            gastos = await movimiento_repo.get_by_tarjeta_daterange(
+                tarjeta_id, period["inicio"], period["fin"]
+            )
+        else:
+            gastos = await gasto_repo.get_by_tarjeta_daterange(
+                tarjeta_id, period["inicio"], period["fin"]
+            )
+        cuotas = []
+        cuota_repo = movimiento_cuota_repo or gasto_cuota_repo
+        if cuota_repo:
+            cuotas = await cuota_repo.get_pendientes_tarjeta(
+                tarjeta_id, period["periodo"]
+            )
+        total_gastos = sum(g["monto"] for g in gastos)
+        total_cuotas = sum(c["monto_cuota"] for c in cuotas)
+        return {
+            "tarjeta": tarjeta,
+            "periodo": period,
+            "gastos": gastos,
+            "cuotas": cuotas,
+            "total_gastos": round(total_gastos, 2),
+            "total_cuotas": round(total_cuotas, 2),
+            "total": round(total_gastos + total_cuotas, 2),
+        }
+
+    @app.get("/api/tarjetas/{tarjeta_id}/cuotas")
+    async def get_cuotas_tarjeta(tarjeta_id: int):
+        """Get all pending installments for a credit card."""
+        if movimiento_cuota_repo:
+            return await movimiento_cuota_repo.get_pendientes_tarjeta(tarjeta_id)
+        if gasto_cuota_repo:
+            return await gasto_cuota_repo.get_pendientes_tarjeta(tarjeta_id)
+        return []
+
+    @app.get("/api/tarjetas/{tarjeta_id}/pagos")
+    async def get_tarjeta_pagos(tarjeta_id: int):
+        """Get credit card payment history."""
+        if movimiento_repo:
+            from src.database.db import get_db
+            db = await get_db()
+            cursor = await db.execute(
+                """SELECT m.*, c.nombre as cuenta_nombre
+                   FROM movimientos m
+                   LEFT JOIN cuentas c ON c.id = m.cuenta_id
+                   WHERE m.tipo = 'pago_tarjeta' AND m.tarjeta_id = ?
+                   ORDER BY m.fecha DESC""",
+                (tarjeta_id,),
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+        if not pago_tarjeta_repo:
+            return []
+        return await pago_tarjeta_repo.get_by_tarjeta(tarjeta_id)
+
     @app.delete("/api/tarjetas/{tarjeta_id}")
     async def delete_tarjeta(tarjeta_id: int):
         if not tarjeta_repo:
@@ -312,6 +528,12 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                 result["rates"] = {}
         return result
 
+    @app.get("/api/tipo-cambio/historico")
+    async def get_tipo_cambio_historico(dias: int = 30):
+        if not tipo_cambio_repo:
+            return []
+        return await tipo_cambio_repo.get_historico(dias)
+
     @app.get("/api/convertir")
     async def convertir(monto: float = 1, de: str = "USD", a: str = "PEN"):
         if not currency_service:
@@ -320,6 +542,236 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         tasa = await currency_service.get_rate(de, a)
         return {"resultado": resultado, "tasa": tasa, "de": de, "a": a}
 
+    # --- Memoria ---
+    @app.get("/api/memoria")
+    async def get_memoria():
+        if not memoria_repo:
+            return []
+        return await memoria_repo.get_all()
+
+    @app.delete("/api/memoria/{memoria_id}")
+    async def delete_memoria(memoria_id: int):
+        if not memoria_repo:
+            return {"error": "Memoria no disponible"}
+        await memoria_repo.delete(memoria_id)
+        return {"ok": True}
+
+    # --- Recordatorios ---
+    @app.get("/api/recordatorios")
+    async def get_recordatorios():
+        if not recordatorio_repo:
+            return []
+        return await recordatorio_repo.get_activos()
+
+    @app.delete("/api/recordatorios/{recordatorio_id}")
+    async def delete_recordatorio(recordatorio_id: int):
+        if not recordatorio_repo:
+            return {"error": "Recordatorios no disponible"}
+        await recordatorio_repo.delete(recordatorio_id)
+        return {"ok": True}
+
+    # --- System Stats (RPi) via WebSocket ---
+    async def _read_system_stats() -> dict:
+        stats: dict = {}
+        # CPU temperature
+        try:
+            stats["temp"] = int(Path("/sys/class/thermal/thermal_zone0/temp").read_text().strip()) / 1000
+        except Exception:
+            stats["temp"] = None
+        # Memory
+        try:
+            meminfo = {}
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                parts = line.split()
+                if parts[0].rstrip(":") in ("MemTotal", "MemAvailable"):
+                    meminfo[parts[0].rstrip(":")] = int(parts[1])
+            total = meminfo.get("MemTotal", 0)
+            avail = meminfo.get("MemAvailable", 0)
+            used = total - avail
+            stats["mem_total_mb"] = round(total / 1024)
+            stats["mem_used_mb"] = round(used / 1024)
+            stats["mem_pct"] = round(used / total * 100) if total else 0
+        except Exception:
+            stats["mem_total_mb"] = stats["mem_used_mb"] = stats["mem_pct"] = None
+        # CPU usage (sample /proc/stat over 0.5s)
+        try:
+            def read_cpu():
+                line = Path("/proc/stat").read_text().splitlines()[0]
+                vals = [int(v) for v in line.split()[1:]]
+                idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+                total = sum(vals)
+                return idle, total
+            idle1, total1 = read_cpu()
+            await asyncio.sleep(0.2)
+            idle2, total2 = read_cpu()
+            d_total = total2 - total1
+            d_idle = idle2 - idle1
+            stats["cpu_pct"] = round((1 - d_idle / d_total) * 100) if d_total else 0
+        except Exception:
+            stats["cpu_pct"] = None
+        # Disk
+        try:
+            st = os.statvfs("/")
+            total_bytes = st.f_frsize * st.f_blocks
+            free_bytes = st.f_frsize * st.f_bavail
+            used_bytes = total_bytes - free_bytes
+            stats["disk_total_gb"] = round(total_bytes / (1024**3), 1)
+            stats["disk_used_gb"] = round(used_bytes / (1024**3), 1)
+            stats["disk_pct"] = round(used_bytes / total_bytes * 100) if total_bytes else 0
+        except Exception:
+            stats["disk_total_gb"] = stats["disk_used_gb"] = stats["disk_pct"] = None
+        # Uptime
+        try:
+            uptime_secs = float(Path("/proc/uptime").read_text().split()[0])
+            days = int(uptime_secs // 86400)
+            hours = int((uptime_secs % 86400) // 3600)
+            mins = int((uptime_secs % 3600) // 60)
+            if days > 0:
+                stats["uptime"] = f"{days}d {hours}h"
+            elif hours > 0:
+                stats["uptime"] = f"{hours}h {mins}m"
+            else:
+                stats["uptime"] = f"{mins}m"
+        except Exception:
+            stats["uptime"] = None
+        return stats
+
+    _stats_task = None
+
+    async def _stats_broadcast_loop():
+        while True:
+            try:
+                if ws_manager.connections:
+                    stats = await _read_system_stats()
+                    if sonoff_service and sonoff_service.latest:
+                        stats["power_w"] = sonoff_service.latest.get("power_w")
+                        stats["voltage_v"] = sonoff_service.latest.get("voltage_v")
+                        stats["current_a"] = sonoff_service.latest.get("current_a")
+                        stats["day_kwh"] = sonoff_service.latest.get("day_kwh")
+                        stats["month_kwh"] = sonoff_service.latest.get("month_kwh")
+                    await ws_manager.broadcast({"type": "system_stats", **stats})
+            except Exception:
+                logger.debug("Stats broadcast error", exc_info=True)
+            await asyncio.sleep(1)
+
+    def _ensure_stats_loop():
+        nonlocal _stats_task
+        if _stats_task is None or _stats_task.done():
+            _stats_task = asyncio.create_task(_stats_broadcast_loop())
+
+    # --- Consumos (agua, luz, gas) ---
+    @app.get("/api/consumos")
+    async def get_consumos(tipo: str = "luz", mes: str = None):
+        if not consumo_repo:
+            return []
+        return await consumo_repo.get_by_month(tipo, mes)
+
+    @app.get("/api/consumos/actual")
+    async def get_consumo_actual():
+        if sonoff_service and sonoff_service.latest:
+            return sonoff_service.latest
+        return {}
+
+    @app.get("/api/consumos/resumen")
+    async def get_consumo_resumen(mes: str = None):
+        if not consumo_repo:
+            return []
+        return await consumo_repo.get_all_resumen(mes)
+
+    @app.post("/api/consumos")
+    async def create_consumo(data: dict):
+        if not consumo_repo:
+            return {"error": "Consumos no disponible"}
+        doc_id = await consumo_repo.create(
+            tipo=data["tipo"],
+            valor=data["valor"],
+            unidad=data.get("unidad", "m3"),
+            fecha=data["fecha"],
+            source="manual",
+            costo=data.get("costo"),
+        )
+        return {"id": doc_id}
+
+    @app.delete("/api/consumos/{consumo_id}")
+    async def delete_consumo(consumo_id: int):
+        if not consumo_repo:
+            return {"error": "Consumos no disponible"}
+        await consumo_repo.delete(consumo_id)
+        return {"ok": True}
+
+    # --- Consumos: chart, periodo, pagos, config ---
+    @app.get("/api/consumos/chart")
+    async def get_consumo_chart(tipo: str = "luz", desde: str = "", hasta: str = "",
+                                 slice: int = 1):
+        if not consumo_repo:
+            return []
+        if not desde:
+            from datetime import datetime, timedelta
+            desde = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00")
+        if not hasta:
+            from datetime import datetime
+            hasta = datetime.now().strftime("%Y-%m-%dT23:59:59")
+        return await consumo_repo.get_chart_data(tipo, desde, hasta, slice)
+
+    @app.get("/api/consumos/periodo")
+    async def get_consumo_periodo(tipo: str = "luz", desde: str = "", hasta: str = ""):
+        if not consumo_repo:
+            return {"error": "Consumos no disponible"}
+        return await consumo_repo.get_consumo_periodo(tipo, desde, hasta)
+
+    @app.get("/api/consumos/pagos")
+    async def get_consumo_pagos(tipo: str = "luz"):
+        if not pago_consumo_repo:
+            return []
+        return await pago_consumo_repo.get_all(tipo)
+
+    @app.post("/api/consumos/pagos")
+    async def create_consumo_pago(data: dict):
+        if not pago_consumo_repo:
+            return {"error": "Pagos de consumo no disponible"}
+        # Auto-calculate kWh and costo_kwh if consumo data available
+        kwh = data.get("kwh_periodo")
+        costo_kwh = data.get("costo_kwh")
+        if consumo_repo and data.get("fecha_desde") and data.get("fecha_hasta"):
+            if kwh is None:
+                periodo = await consumo_repo.get_consumo_periodo(
+                    data.get("tipo", "luz"), data["fecha_desde"], data["fecha_hasta"])
+                kwh = periodo.get("kwh_total")
+            if kwh and kwh > 0 and costo_kwh is None:
+                costo_kwh = round(data["monto"] / kwh, 4)
+        doc_id = await pago_consumo_repo.create(
+            tipo=data.get("tipo", "luz"),
+            monto=data["monto"],
+            fecha_pago=data["fecha_pago"],
+            fecha_desde=data.get("fecha_desde", ""),
+            fecha_hasta=data.get("fecha_hasta", ""),
+            kwh_periodo=kwh,
+            costo_kwh=costo_kwh,
+            notas=data.get("notas", ""),
+        )
+        return {"id": doc_id, "kwh_periodo": kwh, "costo_kwh": costo_kwh}
+
+    @app.delete("/api/consumos/pagos/{pago_id}")
+    async def delete_consumo_pago(pago_id: int):
+        if not pago_consumo_repo:
+            return {"error": "Pagos de consumo no disponible"}
+        await pago_consumo_repo.delete(pago_id)
+        return {"ok": True}
+
+    @app.get("/api/consumos/config")
+    async def get_consumo_config():
+        if not consumo_config_repo:
+            return {}
+        return await consumo_config_repo.get_all()
+
+    @app.post("/api/consumos/config")
+    async def save_consumo_config(data: dict):
+        if not consumo_config_repo:
+            return {"error": "Config no disponible"}
+        for clave, valor in data.items():
+            await consumo_config_repo.set(clave, str(valor))
+        return {"ok": True}
+
     # --- Health ---
     @app.get("/api/health")
     async def health():
@@ -327,9 +779,12 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         return {"status": "ok", "whatsapp": wa_status}
 
     # Static files for assets
-    app.mount("/assets", StaticFiles(directory="web/assets"), name="assets")
-    app.mount("/css", StaticFiles(directory="web/css"), name="css")
-    app.mount("/js", StaticFiles(directory="web/js"), name="js")
+    if Path("web/assets").exists():
+        app.mount("/assets", StaticFiles(directory="web/assets"), name="assets")
+    if Path("web/css").exists():
+        app.mount("/css", StaticFiles(directory="web/css"), name="css")
+    if Path("web/js").exists():
+        app.mount("/js", StaticFiles(directory="web/js"), name="js")
 
     # SPA fallback: any unmatched route serves index.html for React Router
     @app.get("/{full_path:path}")

@@ -6,8 +6,8 @@ class MensajeRepo:
     async def save(self, data: dict) -> dict:
         db = await get_db()
         cursor = await db.execute(
-            """INSERT INTO mensajes (role, content, media_path, source, timestamp, gasto_ids)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO mensajes (role, content, media_path, source, timestamp, gasto_ids, model)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["role"],
                 data.get("content", ""),
@@ -15,6 +15,7 @@ class MensajeRepo:
                 data["source"],
                 data["timestamp"],
                 json.dumps(data.get("gastoIds", [])),
+                data.get("model"),
             ),
         )
         await db.commit()

@@ -1,15 +1,17 @@
-from src.repository.presupuesto_repo import PresupuestoRepo
-from src.repository.gasto_repo import GastoRepo
-
 CURRENCY_SYMBOLS = {"PEN": "S/", "USD": "$", "EUR": "€"}
 
 
 class BudgetService:
-    def __init__(self, presupuesto_repo: PresupuestoRepo, gasto_repo: GastoRepo,
-                 perfil_repo=None):
+    def __init__(self, presupuesto_repo, gasto_repo=None, perfil_repo=None,
+                 movimiento_repo=None):
         self.presupuesto_repo = presupuesto_repo
         self.gasto_repo = gasto_repo
         self.perfil_repo = perfil_repo
+        self.movimiento_repo = movimiento_repo
+
+    def _get_expense_repo(self):
+        """Prefer movimiento_repo, fallback to gasto_repo."""
+        return self.movimiento_repo or self.gasto_repo
 
     async def _get_symbol(self) -> str:
         if self.perfil_repo:
@@ -26,7 +28,8 @@ class BudgetService:
         if not presupuesto:
             return None
 
-        total = await self.gasto_repo.total_categoria_mes(categoria)
+        repo = self._get_expense_repo()
+        total = await repo.total_categoria_mes(categoria)
         limite = presupuesto["limite_mensual"]
         porcentaje = (total / limite * 100) if limite > 0 else 0
         alerta_pct = presupuesto.get("alerta_porcentaje", 80)

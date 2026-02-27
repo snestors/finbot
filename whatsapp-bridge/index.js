@@ -148,6 +148,18 @@ async function handleMessage(msg, isSelfSent) {
 
     console.log(`[bridge] ${isSelfSent ? 'SELF' : 'IN'} chatId=${chatId} body="${(msg.body || '').substring(0, 80)}"`);
 
+    // Mark as read (blue checks) immediately
+    try {
+      const chat = await msg.getChat();
+      await chat.sendSeen();
+    } catch (_) {}
+
+    // Show typing indicator while processing
+    try {
+      const chat = await msg.getChat();
+      await chat.sendStateTyping();
+    } catch (_) {}
+
     const payload = {
       from: chatId,
       body: msg.body || '',
@@ -201,6 +213,34 @@ app.post('/send', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error('[bridge] Error sending:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- Typing indicator (called by Python) ---
+app.post('/typing', async (req, res) => {
+  try {
+    const { chatId, state } = req.body;
+    const chat = await client.getChatById(chatId);
+    if (state === 'stop') {
+      await chat.clearState();
+    } else {
+      await chat.sendStateTyping();
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- Mark as read (called by Python) ---
+app.post('/mark-read', async (req, res) => {
+  try {
+    const { chatId } = req.body;
+    const chat = await client.getChatById(chatId);
+    await chat.sendSeen();
+    res.json({ ok: true });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

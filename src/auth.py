@@ -13,10 +13,9 @@ logger = logging.getLogger(__name__)
 _sessions: dict[str, bool] = {}
 
 PUBLIC_PATHS = {
-    "/login", "/login.html", "/api/login", "/api/health",
-    "/webhook/whatsapp", "/favicon.ico",
+    "/api/login", "/api/health", "/webhook/whatsapp", "/favicon.ico",
 }
-PUBLIC_PREFIXES = ("/css/", "/js/auth.js", "/api/login", "/assets/")
+PUBLIC_PREFIXES = ("/api/login", "/assets/")
 
 
 def is_public(path: str) -> bool:
@@ -64,9 +63,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if session_token and is_valid_session(session_token):
             return await call_next(request)
 
-        # API calls get 401
+        # API calls get 401 — React client handles redirect to /login
         if path.startswith("/api/"):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-        # HTML pages redirect to login
-        return RedirectResponse("/login")
+        # All other routes (SPA pages): let through so React can load and handle auth
+        return await call_next(request)

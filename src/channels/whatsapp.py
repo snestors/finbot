@@ -21,6 +21,24 @@ class WhatsAppChannel:
         except httpx.HTTPError as e:
             logger.error(f"Error sending WhatsApp message: {e}")
 
+    async def mark_read(self, chat_id: str):
+        try:
+            await self._client.post(
+                f"{self.base_url}/mark-read",
+                json={"chatId": chat_id},
+            )
+        except Exception:
+            pass
+
+    async def send_typing(self, chat_id: str, stop: bool = False):
+        try:
+            await self._client.post(
+                f"{self.base_url}/typing",
+                json={"chatId": chat_id, "state": "stop" if stop else "typing"},
+            )
+        except Exception:
+            pass
+
     async def get_status(self) -> dict:
         try:
             resp = await self._client.get(f"{self.base_url}/status")

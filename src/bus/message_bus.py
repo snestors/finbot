@@ -16,6 +16,8 @@ class MessageBus:
         self.processor = processor
         self.whatsapp = whatsapp
         self.ws_manager = ws_manager
+        # Give processor a reference back so it can send follow-up messages
+        self.processor._message_bus = self
 
     def _now_iso(self) -> str:
         return datetime.now(ZoneInfo(settings.timezone)).isoformat()
@@ -35,12 +37,17 @@ class MessageBus:
             return None
 
     async def handle_incoming(self, text: str, media: dict | None, source: str, reply_to: str | None = None):
-        # 1. Save media to disk
+        # 1. Mark as read + start typing (WhatsApp only)
+        if source == "whatsapp" and reply_to:
+            await self.whatsapp.mark_read(reply_to)
+            await self.whatsapp.send_typing(reply_to)
+
+        # 2. Save media to disk
         media_path = None
         if media and media.get("data"):
             media_path = self._save_media(media)
 
-        # 2. Save user message
+        # 3. Save user message
         user_msg = await self.mensaje_repo.save({
             "role": "user",
             "content": text,
@@ -49,23 +56,33 @@ class MessageBus:
             "timestamp": self._now_iso(),
         })
 
-        # 3. Process
+        # 4. Process
         result = await self.processor.process(text=text, media=media)
 
-        # 4. Save bot response
+        # 5. Stop typing
+        if source == "whatsapp" and reply_to:
+            await self.whatsapp.send_typing(reply_to, stop=True)
+
+        # 6. Append model indicator
+        response_text = result.response_text
+        if result.model:
+            response_text += f"\n_via {result.model}_"
+
+        # 7. Save bot response
         bot_msg = await self.mensaje_repo.save({
             "role": "bot",
-            "content": result.response_text,
+            "content": response_text,
             "source": "bot",
             "timestamp": self._now_iso(),
             "gastoIds": result.gasto_ids or [],
+            "model": result.model,
         })
 
-        # 5. Reply via WhatsApp
+        # 8. Reply via WhatsApp
         if source == "whatsapp" and reply_to:
-            await self.whatsapp.send_message(to=reply_to, message=result.response_text)
+            await self.whatsapp.send_message(to=reply_to, message=response_text)
 
-        # 6. Broadcast to web clients
+        # 9. Broadcast to web clients
         await self.ws_manager.broadcast({
             "type": "new_messages",
             "user_message": user_msg,

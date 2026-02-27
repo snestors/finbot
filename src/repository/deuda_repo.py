@@ -67,7 +67,8 @@ class DeudaRepo:
         await db.commit()
         return deuda_id
 
-    async def registrar_pago(self, deuda_id: int, monto: float):
+    async def registrar_pago(self, deuda_id: int, monto: float,
+                             cuenta_id: int = None, monto_cuenta: float = None):
         db = await get_db()
         cursor = await db.execute("SELECT * FROM deudas WHERE id = ?", (deuda_id,))
         row = await cursor.fetchone()
@@ -86,9 +87,10 @@ class DeudaRepo:
             "UPDATE deudas SET saldo_actual = ?, activa = ?, cuotas_pagadas = ? WHERE id = ?",
             (nuevo_saldo, activa, cuotas_pagadas, deuda_id),
         )
+        mc = monto_cuenta if monto_cuenta is not None else monto
         await db.execute(
-            "INSERT INTO deuda_pagos (deuda_id, monto, fecha) VALUES (?, ?, ?)",
-            (deuda_id, monto, _now().isoformat()),
+            "INSERT INTO deuda_pagos (deuda_id, monto, fecha, cuenta_id, monto_cuenta) VALUES (?, ?, ?, ?, ?)",
+            (deuda_id, monto, _now().isoformat(), cuenta_id, mc),
         )
         await db.commit()
 
@@ -110,7 +112,10 @@ class DeudaRepo:
     async def _get_pagos(self, deuda_id: int) -> list[dict]:
         db = await get_db()
         cursor = await db.execute(
-            "SELECT * FROM deuda_pagos WHERE deuda_id = ? ORDER BY fecha DESC",
+            """SELECT dp.*, c.nombre as cuenta_nombre
+               FROM deuda_pagos dp
+               LEFT JOIN cuentas c ON c.id = dp.cuenta_id
+               WHERE dp.deuda_id = ? ORDER BY dp.fecha DESC""",
             (deuda_id,),
         )
         return [dict(r) for r in await cursor.fetchall()]
