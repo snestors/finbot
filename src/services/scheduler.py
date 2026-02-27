@@ -309,8 +309,11 @@ class SchedulerService:
             current_day = str(now.day)
 
             recordatorios = await self.recordatorio_repo.get_activos()
+            # Ventana de tolerancia: hora actual y minuto anterior
+            from datetime import timedelta
+            prev_time = (now - timedelta(minutes=1)).strftime("%H:%M")
             for r in recordatorios:
-                if r["hora"] != current_time:
+                if r["hora"] not in (current_time, prev_time):
                     continue
                 dias = r["dias"]
                 # Check if today matches
