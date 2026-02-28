@@ -776,14 +776,29 @@ class ActionExecutor:
 
     async def _do_recordatorio(self, accion: dict) -> dict:
         recordatorio_repo = self.repos.get("recordatorio")
-        if recordatorio_repo:
-            rec_id = await recordatorio_repo.save(
-                mensaje=accion.get("mensaje", ""),
-                hora=accion.get("hora", "09:00"),
-                dias=accion.get("dias", "todos"),
-            )
-            return {"data_response": f"Recordatorio #{rec_id} creado."}
-        return {}
+        if not recordatorio_repo:
+            return {}
+        mensaje = accion.get("mensaje", "")
+        hora = accion.get("hora", "09:00")
+        dias = accion.get("dias", "todos")
+        rec_id = await recordatorio_repo.save(mensaje=mensaje, hora=hora, dias=dias)
+        logger.info(f"Recordatorio #{rec_id} saved: {mensaje} @ {hora} ({dias})")
+
+        # Sync to Google Calendar
+        google_svc = self.repos.get("google_service")
+        cal_note = ""
+        if google_svc:
+            event_id = google_svc.create_calendar_event(mensaje, hora, dias)
+            if event_id:
+                await recordatorio_repo.update_google_event_id(rec_id, event_id)
+                cal_note = " (sincronizado con Google Calendar)"
+                logger.info(f"Recordatorio #{rec_id} synced to Calendar: {event_id}")
+            else:
+                logger.warning(f"Recordatorio #{rec_id} Calendar sync failed")
+        else:
+            logger.warning("google_service not found in repos, skipping Calendar sync")
+
+        return {"data_response": f"Recordatorio #{rec_id} creado{cal_note}."}
 
     async def _resumen_hoy_detallado(self) -> str:
         mov_repo = self.repos["movimiento"]

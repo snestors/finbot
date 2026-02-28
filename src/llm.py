@@ -1,4 +1,5 @@
 """LLM client: Claude (primary via OAuth) + Gemini (fallback)."""
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -38,17 +39,26 @@ class LLMClient:
 
     async def generate(self, system: str, user_message: str,
                        history: list[dict] | None = None) -> LLMResponse:
-        """Generate response. Claude first, Gemini fallback on auth error."""
+        """Generate response. Claude first with retries, Gemini fallback."""
         if self._claude:
-            try:
-                text = await self._call_claude(system, user_message, history)
-                return LLMResponse(text=text, model="sonnet")
-            except anthropic.AuthenticationError as e:
-                logger.warning(f"[llm] Claude AuthError: {e} -> Gemini fallback")
-            except anthropic.RateLimitError as e:
-                logger.warning(f"[llm] Claude RateLimit: {e} -> Gemini fallback")
-            except anthropic.APIError as e:
-                logger.error(f"[llm] Claude APIError: {e} -> Gemini fallback")
+            # Retry Claude up to 3 times on rate limit (wait 5s, 10s, 15s)
+            for attempt in range(3):
+                try:
+                    text = await self._call_claude(system, user_message, history)
+                    return LLMResponse(text=text, model="sonnet")
+                except anthropic.AuthenticationError as e:
+                    logger.warning(f"[llm] Claude AuthError: {e} -> Gemini fallback")
+                    break  # No point retrying auth errors
+                except anthropic.RateLimitError as e:
+                    wait = 5 * (attempt + 1)
+                    if attempt < 2:
+                        logger.info(f"[llm] Claude 429, retrying in {wait}s (attempt {attempt + 1}/3)")
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.warning(f"[llm] Claude 429 after 3 attempts -> Gemini fallback")
+                except anthropic.APIError as e:
+                    logger.error(f"[llm] Claude APIError: {e} -> Gemini fallback")
+                    break
 
         if self._gemini:
             text = await self._call_gemini(system, user_message, history)
@@ -74,7 +84,7 @@ class LLMClient:
                            history: list[dict] | None) -> str:
         prompt = self._build_gemini_prompt(system, user_message, history)
         response = await self._gemini.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-pro-preview",
             contents=prompt,
         )
         logger.debug("[llm] Gemini fallback OK")
@@ -111,10 +121,18 @@ class LLMClient:
 
         return messages
 
+    _GEMINI_GUARD = """## REGLAS CRITICAS (OBLIGATORIO)
+- NUNCA digas que hiciste algo si no incluiste la accion en el JSON de "acciones".
+- Si no ejecutas una accion, NO confirmes que se hizo. Di "no pude hacerlo" o genera la accion correcta.
+- Tu respuesta SIEMPRE debe ser JSON valido con "respuesta" y "acciones". Sin excepciones.
+- PROHIBIDO inventar resultados. Solo reporta lo que realmente ejecutaste.
+- Si no sabes el ID de un recordatorio u otro recurso, pregunta. NO adivines.
+"""
+
     def _build_gemini_prompt(self, system: str, user_message: str,
                              history: list[dict] | None) -> str:
         """Build single-string prompt for Gemini."""
-        parts = [system]
+        parts = [self._GEMINI_GUARD, system]
         if history:
             parts.append("\n## HISTORIAL (ultimos mensajes)")
             for msg in history:

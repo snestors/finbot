@@ -109,6 +109,18 @@ class Processor:
         response = result.get("respuesta", "")
         acciones = result.get("acciones", [])
         model = result.get("_model", "")
+
+        # Guard: if response claims an action was done but acciones is empty, warn
+        if not acciones and model == "gemini":
+            import re as _re
+            _claim_patterns = _re.compile(
+                r'(?:recordatorio|gasto|ingreso|presupuesto|deuda|cobro|cuenta|tarjeta|memoria)'
+                r'\s*#?\d*\s*(?:cread[oa]|eliminad[oa]|actualizad[oa]|registrad[oa]|guardad[oa])',
+                _re.IGNORECASE,
+            )
+            if _claim_patterns.search(response):
+                logger.warning(f"[processor] Gemini claimed action but acciones=[], stripping claim")
+                response += "\n\n⚠️ _No se ejecutó ninguna acción. Si esperabas un cambio, repite tu pedido._"
         gasto_ids = []
 
         MAX_TOOL_LOOPS = 12
