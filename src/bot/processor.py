@@ -114,8 +114,8 @@ class Processor:
         if not acciones and model == "gemini":
             import re as _re
             _claim_patterns = _re.compile(
-                r'(?:recordatorio|gasto|ingreso|presupuesto|deuda|cobro|cuenta|tarjeta|memoria)'
-                r'\s*#?\d*\s*(?:cread[oa]|eliminad[oa]|actualizad[oa]|registrad[oa]|guardad[oa])',
+                r'(?:recordatorio|gasto|ingreso|presupuesto|deuda|cobro|cuenta|tarjeta|memoria|calendario|evento)'
+                r'\s*#?\d*\s*(?:cread[oa]|eliminad[oa]|actualizad[oa]|registrad[oa]|guardad[oa]|importad[oa]|sincronizad[oa])',
                 _re.IGNORECASE,
             )
             if _claim_patterns.search(response):

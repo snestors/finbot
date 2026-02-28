@@ -175,6 +175,7 @@ def run_app():
     from src.services.document_parser import DocumentParser
     from src.services.budget import BudgetService
     from src.services.scheduler import SchedulerService
+    from src.services.google_service import GoogleService
     from src.channels.whatsapp import WhatsAppChannel
     from src.channels.web import WebSocketManager, create_app
     from src.bus.message_bus import MessageBus
@@ -307,6 +308,7 @@ def run_app():
         "consumo": consumo_repo, "pago_consumo": pago_consumo_repo,
         "consumo_config": consumo_config_repo,
         "sonoff_service": sonoff_service,
+        "google_service": GoogleService(google_email_repo=None),
     }
 
     from src.agent.tools import AgentTools
@@ -400,6 +402,7 @@ def run_app():
         consumo_repo=consumo_repo,
         pago_consumo_repo=pago_consumo_repo,
         consumo_config_repo=consumo_config_repo,
+        google_service=repos["google_service"],
     )
 
     # ---- Start ----

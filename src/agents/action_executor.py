@@ -75,6 +75,9 @@ class ActionExecutor:
             "tarjeta": self._do_tarjeta,
             "memorizar": self._do_memorizar,
             "recordatorio": self._do_recordatorio,
+            "eliminar_recordatorio": self._do_eliminar_recordatorio,
+            "actualizar_recordatorio": self._do_actualizar_recordatorio,
+            "importar_calendario": self._do_importar_calendario,
             "consulta_consumo": self._do_consulta_consumo,
         }
 
@@ -799,6 +802,94 @@ class ActionExecutor:
             logger.warning("google_service not found in repos, skipping Calendar sync")
 
         return {"data_response": f"Recordatorio #{rec_id} creado{cal_note}."}
+
+    async def _do_eliminar_recordatorio(self, accion: dict) -> dict:
+        recordatorio_repo = self.repos.get("recordatorio")
+        if not recordatorio_repo:
+            return {}
+        rec_id = accion.get("recordatorio_id") or accion.get("id")
+        if not rec_id:
+            return {"data_response": "Necesito el ID del recordatorio para eliminarlo."}
+        rec = await recordatorio_repo.get_by_id(rec_id)
+        if not rec:
+            return {"data_response": f"No encontré el recordatorio #{rec_id}."}
+        # Delete Calendar event if linked
+        google_svc = self.repos.get("google_service")
+        if google_svc and rec.get("google_event_id"):
+            try:
+                google_svc.delete_calendar_event(rec["google_event_id"])
+                logger.info(f"Calendar event deleted for recordatorio #{rec_id}")
+            except Exception as e:
+                logger.warning(f"Calendar delete failed for recordatorio #{rec_id}: {e}")
+        await recordatorio_repo.delete(rec_id)
+        return {"data_response": f"Recordatorio #{rec_id} eliminado."}
+
+    async def _do_actualizar_recordatorio(self, accion: dict) -> dict:
+        recordatorio_repo = self.repos.get("recordatorio")
+        if not recordatorio_repo:
+            return {}
+        rec_id = accion.get("recordatorio_id") or accion.get("id")
+        if not rec_id:
+            return {"data_response": "Necesito el ID del recordatorio para actualizarlo."}
+        rec = await recordatorio_repo.get_by_id(rec_id)
+        if not rec:
+            return {"data_response": f"No encontré el recordatorio #{rec_id}."}
+        updates = {}
+        for field in ("mensaje", "hora", "dias", "activo"):
+            if field in accion and accion[field] is not None:
+                updates[field] = accion[field]
+        if updates:
+            await recordatorio_repo.update(rec_id, **updates)
+        # Sync Calendar if content changed
+        google_svc = self.repos.get("google_service")
+        cal_note = ""
+        if google_svc and any(k in updates for k in ("mensaje", "hora", "dias")):
+            try:
+                old_event_id = rec.get("google_event_id")
+                if old_event_id:
+                    google_svc.delete_calendar_event(old_event_id)
+                new_msg = updates.get("mensaje", rec.get("mensaje", ""))
+                new_hora = updates.get("hora", rec.get("hora", "09:00"))
+                new_dias = updates.get("dias", rec.get("dias", "todos"))
+                new_event_id = google_svc.create_calendar_event(new_msg, new_hora, new_dias)
+                if new_event_id:
+                    await recordatorio_repo.update_google_event_id(rec_id, new_event_id)
+                    cal_note = " (Calendar sincronizado)"
+            except Exception as e:
+                logger.warning(f"Calendar sync failed for recordatorio #{rec_id} update: {e}")
+        return {"data_response": f"Recordatorio #{rec_id} actualizado{cal_note}."}
+
+    async def _do_importar_calendario(self, accion: dict) -> dict:
+        google_svc = self.repos.get("google_service")
+        if not google_svc:
+            return {"data_response": "Google Calendar no está configurado."}
+        recordatorio_repo = self.repos.get("recordatorio")
+        if not recordatorio_repo:
+            return {"data_response": "Recordatorios no disponible."}
+        max_events = accion.get("max", 20)
+        events = google_svc.list_upcoming_events(max_results=max_events)
+        if not events:
+            return {"data_response": "No hay eventos próximos en Calendar."}
+        imported = 0
+        skipped = 0
+        for ev in events:
+            event_id = ev.get("event_id", "")
+            # Skip if already imported
+            existing = await recordatorio_repo.get_by_google_event_id(event_id)
+            if existing:
+                skipped += 1
+                continue
+            summary = ev.get("summary", "Evento sin título")
+            hora = ev.get("start", "09:00")
+            if "T" in hora:
+                hora = hora.split("T")[1][:5]
+            rec_id = await recordatorio_repo.save(
+                mensaje=summary, hora=hora, dias="todos",
+                google_event_id=event_id
+            )
+            imported += 1
+            logger.info(f"Imported calendar event '{summary}' as recordatorio #{rec_id}")
+        return {"data_response": f"Importados: {imported}, ya existían: {skipped}."}
 
     async def _resumen_hoy_detallado(self) -> str:
         mov_repo = self.repos["movimiento"]

@@ -155,6 +155,12 @@ class GoogleService:
         dias = dias.strip().lower()
         if dias in ("hoy", "una_vez", ""):
             return []  # Single event, no recurrence
+        # Specific date like "2026-02-28" → single event, no recurrence
+        try:
+            date.fromisoformat(dias)
+            return []
+        except (ValueError, AttributeError):
+            pass
         if dias == "todos":
             return ["RRULE:FREQ=DAILY"]
         # Check if it's day-of-month numbers like "1,15"
@@ -188,8 +194,16 @@ class GoogleService:
         try:
             # Parse hora "HH:MM"
             h, m = hora.split(":")
-            today = date.today()
-            start_dt = datetime(today.year, today.month, today.day,
+
+            # Determine start date: if dias is a specific date (YYYY-MM-DD), use it
+            event_date = date.today()
+            try:
+                parsed = date.fromisoformat(dias.strip())
+                event_date = parsed
+            except (ValueError, AttributeError):
+                pass
+
+            start_dt = datetime(event_date.year, event_date.month, event_date.day,
                                 int(h), int(m), tzinfo=TZ)
             end_dt = start_dt + timedelta(minutes=15)
 

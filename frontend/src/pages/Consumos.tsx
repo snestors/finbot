@@ -210,7 +210,7 @@ function LuzGrafico() {
           <div>
             <label className="block text-xs text-slate-400 mb-1">Agrupar</label>
             <div className="flex gap-1">
-              {[{ v: 1, l: '1h' }, { v: 8, l: '8h' }, { v: 24, l: '24h' }].map(({ v, l }) => (
+              {[{ v: 1, l: '1h' }, { v: 2, l: '2h' }, { v: 4, l: '4h' }, { v: 8, l: '8h' }, { v: 24, l: '24h' }].map(({ v, l }) => (
                 <button key={v} onClick={() => setSlice(v)}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                     slice === v ? 'bg-primary/20 text-primary' : 'bg-surface border border-surface-light text-slate-400 hover:text-slate-200'

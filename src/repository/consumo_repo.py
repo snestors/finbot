@@ -140,11 +140,11 @@ class ConsumoRepo:
                    ORDER BY fecha""",
                 (tipo, desde, hasta),
             )
-        elif slice_hours >= 8:
-            # Group by 8h blocks (0-7, 8-15, 16-23)
+        elif slice_hours >= 2:
+            # Group by N-hour blocks
             cursor = await db.execute(
-                """SELECT substr(fecha, 1, 10) || 'T' ||
-                          printf('%02d', (CAST(substr(fecha, 12, 2) AS INTEGER) / 8) * 8)
+                f"""SELECT substr(fecha, 1, 10) || 'T' ||
+                          printf('%02d', (CAST(substr(fecha, 12, 2) AS INTEGER) / {slice_hours}) * {slice_hours})
                           || ':00:00' as fecha,
                           AVG(power_w) as power_w,
                           AVG(voltage_v) as voltage_v,
@@ -155,7 +155,7 @@ class ConsumoRepo:
                    WHERE tipo = ? AND source = 'sonoff'
                    AND fecha >= ? AND fecha <= ?
                    GROUP BY substr(fecha, 1, 10) || 'T' ||
-                            printf('%02d', (CAST(substr(fecha, 12, 2) AS INTEGER) / 8) * 8)
+                            printf('%02d', (CAST(substr(fecha, 12, 2) AS INTEGER) / {slice_hours}) * {slice_hours})
                    ORDER BY fecha""",
                 (tipo, desde, hasta),
             )

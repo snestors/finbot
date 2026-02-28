@@ -48,7 +48,8 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                movimiento_repo=None, tarjeta_periodo_repo=None,
                movimiento_cuota_repo=None,
                sonoff_service=None, consumo_repo=None,
-               pago_consumo_repo=None, consumo_config_repo=None) -> FastAPI:
+               pago_consumo_repo=None, consumo_config_repo=None,
+               google_service=None) -> FastAPI:
 
     app = FastAPI(title="FinBot", docs_url="/api/docs", lifespan=lifespan)
 
@@ -567,6 +568,14 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
     async def delete_recordatorio(recordatorio_id: int):
         if not recordatorio_repo:
             return {"error": "Recordatorios no disponible"}
+        # Sync: delete Calendar event if linked
+        if google_service:
+            try:
+                rec = await recordatorio_repo.get_by_id(recordatorio_id)
+                if rec and rec.get("google_event_id"):
+                    google_service.delete_calendar_event(rec["google_event_id"])
+            except Exception as e:
+                logger.warning(f"Calendar delete failed for rec #{recordatorio_id}: {e}")
         await recordatorio_repo.delete(recordatorio_id)
         return {"ok": True}
 
