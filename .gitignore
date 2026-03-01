@@ -12,3 +12,4 @@ data/knowledge/*.md
 data/backups/
 data/google_token.json
 web_old/
+data/google_credentials.json
