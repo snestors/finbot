@@ -86,7 +86,7 @@ class ConsumoRepo:
 
         db = await get_db()
         cursor = await db.execute(
-            "SELECT id FROM consumos WHERE tipo = 'luz' AND source = 'sonoff' AND fecha = ?",
+            "SELECT id FROM consumos WHERE tipo = 'luz' AND source IN ('sonoff', 'manual') AND fecha = ?",
             (fecha,),
         )
         if await cursor.fetchone():
@@ -117,7 +117,7 @@ class ConsumoRepo:
             cursor = await db.execute(
                 """SELECT fecha, power_w, voltage_v, current_a, day_kwh, month_kwh
                    FROM consumos
-                   WHERE tipo = ? AND source = 'sonoff'
+                   WHERE tipo = ? AND source IN ('sonoff', 'manual')
                    AND fecha >= ? AND fecha <= ?
                    ORDER BY fecha""",
                 (tipo, desde, hasta),
@@ -134,7 +134,7 @@ class ConsumoRepo:
                           MAX(day_kwh) as day_kwh,
                           MAX(month_kwh) as month_kwh
                    FROM consumos
-                   WHERE tipo = ? AND source = 'sonoff'
+                   WHERE tipo = ? AND source IN ('sonoff', 'manual')
                    AND fecha >= ? AND fecha <= ?
                    GROUP BY substr(fecha, 1, 10)
                    ORDER BY fecha""",
@@ -152,7 +152,7 @@ class ConsumoRepo:
                           MAX(day_kwh) as day_kwh,
                           MAX(month_kwh) as month_kwh
                    FROM consumos
-                   WHERE tipo = ? AND source = 'sonoff'
+                   WHERE tipo = ? AND source IN ('sonoff', 'manual')
                    AND fecha >= ? AND fecha <= ?
                    GROUP BY substr(fecha, 1, 10) || 'T' ||
                             printf('%02d', (CAST(substr(fecha, 12, 2) AS INTEGER) / {slice_hours}) * {slice_hours})
@@ -169,7 +169,7 @@ class ConsumoRepo:
                           MAX(day_kwh) as day_kwh,
                           MAX(month_kwh) as month_kwh
                    FROM consumos
-                   WHERE tipo = ? AND source = 'sonoff'
+                   WHERE tipo = ? AND source IN ('sonoff', 'manual')
                    AND fecha >= ? AND fecha <= ?
                    GROUP BY substr(fecha, 1, 13)
                    ORDER BY fecha""",
@@ -187,7 +187,7 @@ class ConsumoRepo:
                FROM (
                    SELECT MAX(day_kwh) as max_day
                    FROM consumos
-                   WHERE tipo = ? AND source = 'sonoff'
+                   WHERE tipo = ? AND source IN ('sonoff', 'manual')
                    AND fecha >= ? AND fecha <= ?
                    GROUP BY substr(fecha, 1, 10)
                )""",
@@ -209,7 +209,7 @@ class ConsumoRepo:
                       MAX(day_kwh) as day_kwh, MAX(month_kwh) as month_kwh,
                       COUNT(*) as lecturas
                FROM consumos
-               WHERE tipo = 'luz' AND source = 'sonoff'
+               WHERE tipo = 'luz' AND source IN ('sonoff', 'manual')
                AND fecha >= ?""",
             (hoy,),
         )
@@ -228,7 +228,7 @@ class ConsumoRepo:
                FROM (
                    SELECT MAX(day_kwh) as max_day
                    FROM consumos
-                   WHERE tipo = 'luz' AND source = 'sonoff'
+                   WHERE tipo = 'luz' AND source IN ('sonoff', 'manual')
                    AND mes = ?
                    GROUP BY substr(fecha, 1, 10)
                )""",

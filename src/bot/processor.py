@@ -1,5 +1,6 @@
 """Processor — thin orchestrator that routes messages to specialized agents."""
 import logging
+import re
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -110,22 +111,13 @@ class Processor:
         acciones = result.get("acciones", [])
         model = result.get("_model", "")
 
-        # Guard: if response claims an action was done but acciones is empty, warn
-        if not acciones and model == "gemini":
-            import re as _re
-            _claim_patterns = _re.compile(
-                r'(?:recordatorio|gasto|ingreso|presupuesto|deuda|cobro|cuenta|tarjeta|memoria|calendario|evento)'
-                r'\s*#?\d*\s*(?:cread[oa]|eliminad[oa]|actualizad[oa]|registrad[oa]|guardad[oa]|importad[oa]|sincronizad[oa])',
-                _re.IGNORECASE,
-            )
-            if _claim_patterns.search(response):
-                logger.warning(f"[processor] Gemini claimed action but acciones=[], stripping claim")
-                response += "\n\n⚠️ _No se ejecutó ninguna acción. Si esperabas un cambio, repite tu pedido._"
         gasto_ids = []
 
         MAX_TOOL_LOOPS = 12
         scratchpad = Scratchpad()
         did_mutate = False
+        system_errors = []
+        system_confirms = []
 
         for loop_i in range(MAX_TOOL_LOOPS):
             tool_outputs = []
@@ -143,9 +135,18 @@ class Processor:
                 if action_result.get("movimiento_id"):
                     gasto_ids.append(action_result["movimiento_id"])
 
+                # Track real action status
+                if "ok" in action_result:
+                    if not action_result["ok"]:
+                        system_errors.append(action_result.get("message", "Error desconocido"))
+                    else:
+                        msg = action_result.get("message", "")
+                        if msg:
+                            system_confirms.append(msg)
+
                 # Track in scratchpad
                 action_label = f"tool:{accion.get('name', '?')}" if tipo == "tool" else tipo
-                result_text = action_result.get("data_response", "") or action_result.get("alert", "") or "OK"
+                result_text = action_result.get("data_response", "") or action_result.get("message", "") or action_result.get("alert", "") or "OK"
                 scratchpad.add(loop_i, action_label, result_text)
 
                 # Track mutations for context refresh
@@ -160,7 +161,10 @@ class Processor:
             # If no tool actions or no outputs to feed back, we're done
             has_tools = any(a.get("tipo") == "tool" for a in acciones)
             if not has_tools or not tool_outputs:
-                # Append any data_response/alert to final response
+                if system_errors:
+                    response += "\n⚠️ " + " | ".join(system_errors)
+                elif system_confirms:
+                    response += "\n✅ " + " | ".join(system_confirms)
                 if tool_outputs:
                     response += "\n\n" + "\n\n".join(tool_outputs)
                 break

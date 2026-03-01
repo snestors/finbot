@@ -1,12 +1,14 @@
 [
   {
+    "name": "finbot_tools",
+    "command": "/home/nestor/finbot/venv/bin/python3",
+    "args": ["/home/nestor/finbot/src/services/tools_mcp_server.py"],
+    "enabled": true
+  },
+  {
     "name": "google_workspace",
     "command": "/home/nestor/finbot/venv/bin/workspace-mcp",
-    "args": ["--single-user", "--tools", "calendar", "gmail"],
-    "env": {
-      "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
-      "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
-    },
-    "enabled": false
+    "args": ["--single-user", "--tools", "calendar", "gmail", "drive"],
+    "enabled": true
   }
 ]

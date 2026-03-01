@@ -2,6 +2,7 @@
 import json
 import logging
 import re
+from datetime import date
 from pathlib import Path
 
 from src.llm import LLMClient
@@ -60,7 +61,10 @@ class BaseAgent:
     def build_system_prompt(self) -> str:
         """Assemble full system prompt: alma + shared rules + agent-specific prompt."""
         parts = [self._load_alma(), self._load_shared_rules(), self._load_prompt()]
-        return "\n\n".join(p for p in parts if p)
+        prompt = "\n\n".join(p for p in parts if p)
+        # Interpolate dynamic variables in prompts
+        prompt = prompt.replace("{fecha_hoy}", date.today().isoformat())
+        return prompt
 
     async def build_context(self, **kwargs) -> str:
         """Override in subclasses to build agent-specific context."""

@@ -57,8 +57,8 @@ async def build_finance_context(repos: dict) -> str:
                     desc = m.get("descripcion", "")
                     other_lines.append(f"  #{m['id']} [{label}] S/{m['monto']:.2f} {desc}")
                 parts.append("Otros movimientos hoy:\n" + "\n".join(other_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # This month's income WITH IDs
     if mov_repo:
@@ -75,8 +75,8 @@ async def build_finance_context(repos: dict) -> str:
                     parts.append(f"  #{i['id']} {fecha} {moneda} {i['monto']:.2f} {desc}{cuenta}")
             else:
                 parts.append("Ingresos del mes: 0")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Accounts with payment methods
     cuenta_repo = repos.get("cuenta")
@@ -90,8 +90,8 @@ async def build_finance_context(repos: dict) -> str:
                     met = f" metodos:[{','.join(metodos)}]" if metodos else ""
                     cuenta_lines.append(f"  id={c['id']} {c['nombre']} ({c['tipo']}): {c['moneda']} {c['saldo']:.2f}{met}")
                 parts.append("Cuentas:\n" + "\n".join(cuenta_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Credit cards
     tarjeta_repo = repos.get("tarjeta")
@@ -112,8 +112,8 @@ async def build_finance_context(repos: dict) -> str:
                         f" | corte: dia {corte}, pago: dia {pago_d}"
                     )
                 parts.append("Tarjetas:\n" + "\n".join(tj_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Active debts (compact)
     deuda_repo = repos.get("deuda")
@@ -128,8 +128,8 @@ async def build_finance_context(repos: dict) -> str:
                     cuotas = f" [{d.get('cuotas_pagadas', 0)}/{d['cuotas_total']} cuotas]" if d.get("cuotas_total") else ""
                     deuda_lines.append(f"  id={d['id']} {d['nombre']}{entidad}: S/{d['saldo_actual']:.2f}{cuotas}")
                 parts.append(f"Deudas ({len(deudas)}), total S/{total_deudas:.2f}:\n" + "\n".join(deuda_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Pending cobros (compact)
     cobro_repo = repos.get("cobro")
@@ -143,8 +143,8 @@ async def build_finance_context(repos: dict) -> str:
                     concepto = f" ({c['concepto']})" if c.get("concepto") else ""
                     cobro_lines.append(f"  id={c['id']} {c['deudor']}: S/{c['saldo_pendiente']:.2f} de S/{c['monto_total']:.2f}{concepto}")
                 parts.append(f"Cobros pendientes ({len(cobros)}), total S/{total_cobros:.2f}:\n" + "\n".join(cobro_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     return "\n".join(parts)
 
@@ -175,8 +175,8 @@ async def build_energy_context(repos: dict) -> str:
                     f"corriente promedio {hoy.get('avg_current', 0):.2f}A "
                     f"({hoy.get('lecturas', 0)} lecturas en DB)"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
         try:
             mes_res = await consumo_repo.get_mes_resumen_energia()
@@ -184,8 +184,8 @@ async def build_energy_context(repos: dict) -> str:
                 parts.append(
                     f"Historial mes: {mes_res.get('kwh_total', 0):.2f} kWh en {mes_res.get('dias', 0)} dias"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     config_repo = repos.get("consumo_config")
     if config_repo:
@@ -200,8 +200,8 @@ async def build_energy_context(repos: dict) -> str:
             if month_kwh > 0:
                 estimado = month_kwh * costo
                 parts.append(f"Costo estimado mes: S/{estimado:.2f} (basado en {month_kwh:.2f} kWh del medidor)")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     pago_repo = repos.get("pago_consumo")
     if pago_repo:
@@ -213,8 +213,8 @@ async def build_energy_context(repos: dict) -> str:
                     f" ({ultimo.get('kwh_periodo', 0) or 0:.1f} kWh, "
                     f"S/{ultimo.get('costo_kwh', 0) or 0:.4f}/kWh)"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     return "\n".join(parts)
 
@@ -245,18 +245,18 @@ async def build_analysis_context(repos: dict) -> str:
                 parts.append(f"Hoy: {len(gastos_hoy)} gastos, S/{total_hoy:.2f} ({cat_summary})")
             else:
                 parts.append("Hoy: 0 gastos")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
         # Weekly/Monthly summaries
         try:
             parts.append(await mov_repo.resumen_semana())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
         try:
             parts.append(await mov_repo.resumen_mes())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Budget progress
     presupuesto_repo = repos.get("presupuesto")
@@ -270,8 +270,8 @@ async def build_analysis_context(repos: dict) -> str:
                     pct = (total / p["limite_mensual"] * 100) if p["limite_mensual"] > 0 else 0
                     budget_lines.append(f"  {p['categoria']}: S/{total:.0f}/S/{p['limite_mensual']:.0f} ({pct:.0f}%)")
                 parts.append("Presupuestos:\n" + "\n".join(budget_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Account balances
     cuenta_repo = repos.get("cuenta")
@@ -281,8 +281,8 @@ async def build_analysis_context(repos: dict) -> str:
             if cuentas:
                 cuenta_lines = [f"  {c['nombre']}: {c['moneda']} {c['saldo']:.2f}" for c in cuentas]
                 parts.append("Saldos cuentas:\n" + "\n".join(cuenta_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Debt summary
     deuda_repo = repos.get("deuda")
@@ -292,8 +292,8 @@ async def build_analysis_context(repos: dict) -> str:
             if deudas:
                 total = sum(d["saldo_actual"] for d in deudas)
                 parts.append(f"Deudas: {len(deudas)} activas, total S/{total:.2f}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Card summary
     tarjeta_repo = repos.get("tarjeta")
@@ -303,8 +303,8 @@ async def build_analysis_context(repos: dict) -> str:
             if tarjetas:
                 total_usado = sum(t.get("saldo_usado", 0) or 0 for t in tarjetas)
                 parts.append(f"Tarjetas: {len(tarjetas)} activas, total usado S/{total_usado:.2f}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Cobros summary
     cobro_repo = repos.get("cobro")
@@ -314,8 +314,8 @@ async def build_analysis_context(repos: dict) -> str:
             if cobros:
                 total = sum(c["saldo_pendiente"] for c in cobros)
                 parts.append(f"Cobros: {len(cobros)} pendientes, total S/{total:.2f}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Energy context
     try:
@@ -352,34 +352,13 @@ async def build_admin_context(repos: dict, registry_info: list[dict] = None,
             mem_context = await memoria_repo.format_for_context()
             if mem_context:
                 parts.append(mem_context)
-        except Exception:
-            pass
-
-    # Active reminders
-    recordatorio_repo = repos.get("recordatorio")
-    if recordatorio_repo:
-        try:
-            recordatorios = await recordatorio_repo.get_activos()
-            if recordatorios:
-                rec_lines = [f"  #{r['id']} {r['hora']} ({r['dias']}): {r['mensaje']}" for r in recordatorios]
-                parts.append("Recordatorios activos:\n" + "\n".join(rec_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Agent registry info
     if registry_info:
         agent_lines = [f"  {a['name']}: {a['prompt_file']} ({a['prompt_size']}B)" for a in registry_info]
         parts.append("Agentes registrados:\n" + "\n".join(agent_lines))
-
-    # Alma/personality file (so admin can view and edit it)
-    try:
-        from pathlib import Path
-        alma_path = Path(__file__).parent.parent.parent / "data" / "alma.md"
-        if alma_path.exists():
-            alma_content = alma_path.read_text(encoding="utf-8")
-            parts.append(f"Archivo de personalidad (data/alma.md):\n{alma_content}")
-    except Exception:
-        pass
 
     # Plugin info
     try:
@@ -423,8 +402,8 @@ async def build_chat_context(repos: dict) -> str:
             mem_context = await memoria_repo.format_for_context()
             if mem_context:
                 parts.append(mem_context)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     # Today summary (just count + total)
     mov_repo = repos.get("movimiento")
@@ -433,7 +412,7 @@ async def build_chat_context(repos: dict) -> str:
             gastos_hoy = await mov_repo.get_gastos_hoy()
             total_hoy = sum(g["monto"] for g in gastos_hoy)
             parts.append(f"Gastos hoy: {len(gastos_hoy)} gastos, S/{total_hoy:.2f}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"context_builders error: {e}")
 
     return "\n".join(parts)

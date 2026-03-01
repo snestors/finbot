@@ -9,11 +9,12 @@ CURRENCY_SYMBOLS = {"PEN": "S/", "USD": "$", "EUR": "€"}
 class SchedulerService:
     def __init__(self, message_bus, gasto_repo, presupuesto_repo=None,
                  budget_service=None, perfil_repo=None, cobro_repo=None,
-                 recordatorio_repo=None, tarjeta_repo=None,
+                 tarjeta_repo=None,
                  sunat_service=None, tipo_cambio_repo=None,
                  timezone: str = "America/Lima",
                  movimiento_repo=None, tarjeta_periodo_repo=None,
-                 sonoff_service=None, consumo_repo=None):
+                 sonoff_service=None, consumo_repo=None,
+                 mcp_manager=None):
         self.scheduler = AsyncIOScheduler(timezone=timezone)
         self.bus = message_bus
         self.gasto_repo = gasto_repo
@@ -21,7 +22,6 @@ class SchedulerService:
         self.budget_service = budget_service
         self.perfil_repo = perfil_repo
         self.cobro_repo = cobro_repo
-        self.recordatorio_repo = recordatorio_repo
         self.tarjeta_repo = tarjeta_repo
         self.sunat_service = sunat_service
         self.tipo_cambio_repo = tipo_cambio_repo
@@ -29,6 +29,7 @@ class SchedulerService:
         self.tarjeta_periodo_repo = tarjeta_periodo_repo
         self.sonoff_service = sonoff_service
         self.consumo_repo = consumo_repo
+        self.mcp_manager = mcp_manager
 
     async def _get_user_name(self) -> str:
         if self.perfil_repo:
@@ -137,13 +138,13 @@ class SchedulerService:
                 id="alerta_pago_tarjeta",
             )
 
-        # Custom reminders - check every minute
-        if self.recordatorio_repo:
+        # Calendar events check - every minute via MCP
+        if self.mcp_manager:
             self.scheduler.add_job(
-                self._check_recordatorios,
+                self._check_calendar_events,
                 "cron",
                 minute="*",
-                id="check_recordatorios",
+                id="check_calendar_events",
             )
 
         # Sonoff 5-minute reading save
@@ -296,46 +297,49 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"Error checking inactivity: {e}")
 
-    # --- Custom reminders ---
-    async def _check_recordatorios(self):
-        if not self.recordatorio_repo:
+    # --- Calendar events check via MCP ---
+    async def _check_calendar_events(self):
+        if not self.mcp_manager or not self.mcp_manager.has_tool("get_events"):
             return
         try:
-            from datetime import datetime
+            from datetime import datetime, timedelta
             from zoneinfo import ZoneInfo
             now = datetime.now(ZoneInfo(self.scheduler.timezone.key))
-            current_time = now.strftime("%H:%M")
-            current_dow = ["lun", "mar", "mie", "jue", "vie", "sab", "dom"][now.weekday()]
-            current_day = str(now.day)
+            time_min = now.isoformat()
+            time_max = (now + timedelta(minutes=2)).isoformat()
 
-            recordatorios = await self.recordatorio_repo.get_activos()
-            # Ventana de tolerancia: hora actual y minuto anterior
-            from datetime import timedelta
-            prev_time = (now - timedelta(minutes=1)).strftime("%H:%M")
-            for r in recordatorios:
-                if r["hora"] not in (current_time, prev_time):
-                    continue
-                dias = r["dias"]
-                # Check if today matches
-                if dias == "todos":
-                    pass  # always send
-                elif dias.isdigit() or ("," in dias and all(d.strip().isdigit() for d in dias.split(","))):
-                    # Day-of-month: "15" or "1,15"
-                    day_list = [d.strip() for d in dias.split(",")]
-                    if current_day not in day_list:
-                        continue
-                else:
-                    # Day-of-week: "lun,mie,vie"
-                    dow_list = [d.strip().lower() for d in dias.split(",")]
-                    if current_dow not in dow_list:
-                        continue
+            result = await self.mcp_manager.call_tool("get_events", {
+                "user_google_email": "snestors@gmail.com",
+                "time_min": time_min,
+                "time_max": time_max,
+            })
+            if not result:
+                return
 
+            # Parse events from result (may be string or list)
+            import json as _json
+            events = result if isinstance(result, list) else []
+            if isinstance(result, str):
+                # "No events found..." or empty → nothing to notify
+                if not result.strip() or "no events found" in result.lower():
+                    return
+                try:
+                    events = _json.loads(result)
+                except (ValueError, TypeError):
+                    # Non-JSON, non-empty, not "no events" → probably a real notification
+                    nombre = await self._get_user_name()
+                    prefix = f"{nombre}, " if nombre else ""
+                    await self.bus.send_proactive(f"{prefix}recordatorio: {result}")
+                    return
+
+            for event in events:
+                summary = event.get("summary", "Evento sin titulo")
                 nombre = await self._get_user_name()
                 prefix = f"{nombre}, " if nombre else ""
-                await self.bus.send_proactive(f"{prefix}recordatorio: {r['mensaje']}")
+                await self.bus.send_proactive(f"{prefix}recordatorio: {summary}")
 
         except Exception as e:
-            logger.error(f"Error checking recordatorios: {e}")
+            logger.error(f"Error checking calendar events: {e}")
 
     # --- Daily exchange rate persistence ---
     async def _persistir_tipo_cambio(self):

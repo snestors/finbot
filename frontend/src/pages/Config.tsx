@@ -6,8 +6,6 @@ export default function Config() {
   const { data: perfil } = useQuery({ queryKey: ['perfil'], queryFn: () => get('/api/perfil') });
   const { data: waStatus } = useQuery({ queryKey: ['wa-status'], queryFn: () => get('/api/whatsapp/status'), refetchInterval: 10000 });
   const { data: memoria } = useQuery({ queryKey: ['memoria'], queryFn: () => get('/api/memoria') });
-  const { data: recordatorios } = useQuery({ queryKey: ['recordatorios'], queryFn: () => get('/api/recordatorios') });
-
   return (
     <div className="space-y-4">
       <h2 className="text-lg font-bold">Configuración</h2>
@@ -44,19 +42,6 @@ export default function Config() {
         </Card>
       )}
 
-      {recordatorios && recordatorios.length > 0 && (
-        <Card>
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">Recordatorios Activos</h3>
-          <div className="space-y-1">
-            {recordatorios.map((r: any) => (
-              <div key={r.id} className="flex justify-between text-sm py-1 border-b border-surface-light/30">
-                <span>{r.mensaje}</span>
-                <span className="text-slate-400">{r.hora} ({r.dias})</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
     </div>
   );
 }

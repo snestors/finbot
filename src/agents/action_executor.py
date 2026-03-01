@@ -3,12 +3,16 @@ import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from src.agent.tools import AgentTools
 from src.agent.plugin_manager import PluginManager
 from src.config import settings
 from src.services.currency import CurrencyService, SunatTipoCambio
 
 logger = logging.getLogger(__name__)
+
+
+def _now_lima() -> str:
+    return datetime.now(ZoneInfo("America/Lima")).isoformat()
+
 
 # Movement types that map to the unified movimientos table
 _MOV_TYPES = {"gasto", "ingreso", "pago_tarjeta", "transferencia", "pago_deuda", "pago_cobro"}
@@ -17,7 +21,7 @@ _MOV_TYPES = {"gasto", "ingreso", "pago_tarjeta", "transferencia", "pago_deuda",
 class ActionExecutor:
     """Executes parsed actions. Shared across all agents."""
 
-    def __init__(self, repos: dict, tools: AgentTools = None,
+    def __init__(self, repos: dict,
                  currency_service: CurrencyService = None,
                  sunat_service: SunatTipoCambio = None,
                  budget_service=None,
@@ -26,7 +30,6 @@ class ActionExecutor:
                  tarjeta_periodo_repo=None,
                  mcp_manager=None):
         self.repos = repos
-        self.tools = tools or AgentTools()
         self.currency = currency_service or CurrencyService()
         self.sunat = sunat_service or SunatTipoCambio()
         self.budget = budget_service
@@ -76,11 +79,10 @@ class ActionExecutor:
             "tipo_cambio_sunat": self._do_tipo_cambio_sunat,
             "tarjeta": self._do_tarjeta,
             "memorizar": self._do_memorizar,
-            "recordatorio": self._do_recordatorio,
-            "eliminar_recordatorio": self._do_eliminar_recordatorio,
-            "actualizar_recordatorio": self._do_actualizar_recordatorio,
             "importar_calendario": self._do_importar_calendario,
             "consulta_consumo": self._do_consulta_consumo,
+            "set_config_consumo": self._do_set_config_consumo,
+            "registrar_consumo": self._do_registrar_consumo,
         }
 
     async def execute(self, accion: dict) -> dict:
@@ -111,13 +113,13 @@ class ActionExecutor:
                     return {"data_response": f"Error en MCP tool {tipo}: {e}"}
 
             logger.warning(f"Unknown action type: {tipo}")
-            return {}
+            return {"ok": False, "message": f"Acción desconocida: {tipo}"}
 
         try:
             return await handler(accion)
         except Exception as e:
             logger.error(f"Error executing action {tipo}: {e}", exc_info=True)
-            return {}
+            return {"ok": False, "message": f"Error ejecutando {tipo}: {e}"}
 
     # =========================================================================
     # Helpers
@@ -313,7 +315,7 @@ class ActionExecutor:
             semana=semana,
         )
 
-        result = {"movimiento_id": mov_id}
+        result = {"movimiento_id": mov_id, "ok": True, "message": f"#{mov_id} registrado"}
 
         # Side effects by type
         if mov_tipo == "gasto" and self.budget:
@@ -356,11 +358,11 @@ class ActionExecutor:
     async def _do_actualizar_movimiento(self, accion: dict) -> dict:
         mov_id = accion.get("movimiento_id")
         if not mov_id:
-            return {}
+            return {"ok": False, "message": "Falta movimiento_id."}
         mov_repo = self.repos["movimiento"]
         old = await mov_repo.get_by_id(mov_id)
         if not old:
-            return {"data_response": f"No encontre el movimiento #{mov_id}."}
+            return {"ok": False, "message": f"No existe movimiento #{mov_id}."}
         update_fields = {}
         for f in ("monto", "categoria", "descripcion", "comercio",
                   "metodo_pago", "cuenta_id", "tarjeta_id", "cuotas", "moneda"):
@@ -380,19 +382,27 @@ class ActionExecutor:
             )
         if update_fields:
             await mov_repo.update(mov_id, **update_fields)
-        return {"data_response": f"Movimiento #{mov_id} actualizado."}
+        return {"ok": True, "message": f"Movimiento #{mov_id} actualizado."}
 
     async def _do_eliminar_movimiento(self, accion: dict) -> dict:
         mov_id = accion.get("movimiento_id")
-        if mov_id:
-            await self._delete_movimiento(mov_id)
-        return {}
+        if not mov_id:
+            return {"ok": False, "message": "Falta movimiento_id."}
+        mov_repo = self.repos.get("movimiento")
+        existing = await mov_repo.get_by_id(mov_id) if mov_repo else None
+        if not existing:
+            return {"ok": False, "message": f"No existe movimiento #{mov_id}."}
+        await self._delete_movimiento(mov_id)
+        desc = existing.get("descripcion", "")
+        return {"ok": True, "message": f"Eliminado #{mov_id}: S/{existing['monto']:.2f} {desc}".strip()}
 
     async def _do_eliminar_movimientos(self, accion: dict) -> dict:
         ids = accion.get("ids", [])
+        if not ids:
+            return {"ok": False, "message": "No se indicaron IDs para eliminar."}
         for mid in ids:
             await self._delete_movimiento(mid)
-        return {"data_response": f"Eliminados {len(ids)} movimientos."}
+        return {"ok": True, "message": f"Eliminados {len(ids)} movimientos.", "data_response": f"Eliminados {len(ids)} movimientos."}
 
     async def _do_importar_estado_cuenta(self, accion: dict) -> dict:
         """Bulk import credit card statement lines."""
@@ -510,8 +520,8 @@ class ActionExecutor:
             to_delete = [g for g in gastos if g["id"] not in conservar]
             for g in to_delete:
                 await self._delete_movimiento(g["id"])
-            return {"data_response": f"Eliminados {len(to_delete)} gastos. Se conservaron {len(conservar)} gastos."}
-        return {}
+            return {"ok": True, "message": f"Eliminados {len(to_delete)} gastos. Se conservaron {len(conservar)} gastos.", "data_response": f"Eliminados {len(to_delete)} gastos. Se conservaron {len(conservar)} gastos."}
+        return {"ok": False, "message": f"Periodo no soportado: {periodo}"}
 
     async def _do_legacy_eliminar_gastos_periodo(self, accion: dict) -> dict:
         periodo = accion.get("periodo", "hoy")
@@ -526,8 +536,8 @@ class ActionExecutor:
                 to_delete = gastos
             for g in to_delete:
                 await self._delete_movimiento(g["id"])
-            return {"data_response": f"Eliminados {len(to_delete)} gastos."}
-        return {}
+            return {"ok": True, "message": f"Eliminados {len(to_delete)} gastos.", "data_response": f"Eliminados {len(to_delete)} gastos."}
+        return {"ok": False, "message": f"Periodo no soportado: {periodo}"}
 
     async def _do_legacy_actualizar_ingreso(self, accion: dict) -> dict:
         accion["movimiento_id"] = accion.get("ingreso_id")
@@ -544,7 +554,7 @@ class ActionExecutor:
     async def _do_buscar_gasto(self, accion: dict) -> dict:
         texto = accion.get("texto", "")
         if not texto:
-            return {}
+            return {"ok": False, "message": "Falta texto de búsqueda."}
         mov_repo = self.repos["movimiento"]
         gastos = await mov_repo.buscar(texto, tipo="gasto")
         if gastos:
@@ -563,17 +573,17 @@ class ActionExecutor:
         mov_repo = self.repos["movimiento"]
         periodo = accion.get("periodo", "hoy")
         if periodo == "hoy":
-            return {"data_response": await self._resumen_hoy_detallado()}
+            return {"ok": True, "data_response": await self._resumen_hoy_detallado()}
         elif periodo == "semana":
-            return {"data_response": await mov_repo.resumen_semana()}
+            return {"ok": True, "data_response": await mov_repo.resumen_semana()}
         elif periodo == "mes":
-            return {"data_response": await mov_repo.resumen_mes()}
+            return {"ok": True, "data_response": await mov_repo.resumen_mes()}
         elif periodo == "deudas":
-            return {"data_response": await self.repos["deuda"].resumen()}
+            return {"ok": True, "data_response": await self.repos["deuda"].resumen()}
         elif periodo == "cobros":
             cobro_repo = self.repos.get("cobro")
             if cobro_repo:
-                return {"data_response": await cobro_repo.resumen()}
+                return {"ok": True, "data_response": await cobro_repo.resumen()}
         elif periodo == "tarjetas":
             tarjeta_repo = self.repos.get("tarjeta")
             if tarjeta_repo:
@@ -589,8 +599,8 @@ class ActionExecutor:
                             f" - Limite: {t['moneda']} {limite:.2f}"
                             f", Usado: {usado:.2f}, Disponible: {disponible:.2f}"
                         )
-                    return {"data_response": "\n".join(lines)}
-                return {"data_response": "No tienes tarjetas registradas."}
+                    return {"ok": True, "data_response": "\n".join(lines)}
+                return {"ok": True, "data_response": "No tienes tarjetas registradas."}
         elif periodo == "cuentas":
             cuenta_repo = self.repos.get("cuenta")
             if cuenta_repo:
@@ -599,9 +609,9 @@ class ActionExecutor:
                     lines = ["Tus cuentas:"]
                     for c in cuentas:
                         lines.append(f"  | {c['nombre']} ({c['tipo']}): {c['moneda']} {c['saldo']:.2f}")
-                    return {"data_response": "\n".join(lines)}
-                return {"data_response": "No tienes cuentas registradas."}
-        return {}
+                    return {"ok": True, "data_response": "\n".join(lines)}
+                return {"ok": True, "data_response": "No tienes cuentas registradas."}
+        return {"ok": False, "message": f"Periodo no reconocido: {periodo}"}
 
     async def _do_set_presupuesto(self, accion: dict) -> dict:
         presupuesto_repo = self.repos.get("presupuesto")
@@ -613,8 +623,8 @@ class ActionExecutor:
                 "limite_mensual": limite,
                 "alerta_porcentaje": accion.get("alerta_porcentaje", 80),
             })
-            return {"data_response": f"Presupuesto de {categoria}: S/{float(limite):.2f}/mes"}
-        return {}
+            return {"ok": True, "message": f"Presupuesto {categoria}: S/{float(limite):.2f}/mes", "data_response": f"Presupuesto de {categoria}: S/{float(limite):.2f}/mes"}
+        return {"ok": False, "message": "Faltan datos para presupuesto (categoria y limite)."}
 
     async def _do_agregar_deuda(self, accion: dict) -> dict:
         await self.repos["deuda"].save({
@@ -627,7 +637,7 @@ class ActionExecutor:
             "tasa_interes_mensual": accion.get("tasa", 0),
             "pago_minimo": accion.get("pago_minimo", 0),
         })
-        return {}
+        return {"ok": True, "message": "Deuda registrada."}
 
     async def _do_set_perfil(self, accion: dict) -> dict:
         perfil_repo = self.repos.get("perfil")
@@ -641,7 +651,7 @@ class ActionExecutor:
                 update_data["onboarding_completo"] = 1
             if update_data:
                 await perfil_repo.create_or_update(update_data)
-        return {}
+        return {"ok": True, "message": "Perfil actualizado."}
 
     async def _do_crear_cuenta(self, accion: dict) -> dict:
         cuenta_repo = self.repos.get("cuenta")
@@ -653,18 +663,18 @@ class ActionExecutor:
                 "saldo_inicial": accion.get("saldo_inicial", accion.get("saldo", 0)),
                 "metodos_pago": accion.get("metodos_pago", []),
             })
-        return {}
+        return {"ok": True, "message": "Cuenta creada."}
 
     async def _do_actualizar_cuenta(self, accion: dict) -> dict:
         cuenta_repo = self.repos.get("cuenta")
         if not cuenta_repo:
-            return {}
+            return {"ok": False, "message": "No hay repo de cuentas."}
         cuenta_id = accion.get("cuenta_id")
         if not cuenta_id:
-            return {"data_response": "Necesito el ID de la cuenta para editarla."}
+            return {"ok": False, "message": "Necesito el ID de la cuenta para editarla."}
         existing = await cuenta_repo.get_by_id(cuenta_id)
         if not existing:
-            return {"data_response": f"No encontre la cuenta #{cuenta_id}."}
+            return {"ok": False, "message": f"No encontré la cuenta #{cuenta_id}."}
         update_data = {"id": cuenta_id}
         update_data["nombre"] = accion.get("nombre", existing["nombre"])
         update_data["tipo"] = accion.get("tipo_cuenta", existing["tipo"])
@@ -672,7 +682,7 @@ class ActionExecutor:
         update_data["saldo_inicial"] = accion.get("saldo_inicial", existing.get("saldo_inicial", 0))
         update_data["metodos_pago"] = accion.get("metodos_pago", existing.get("metodos_pago", []))
         await cuenta_repo.save(update_data)
-        return {"data_response": f"Cuenta #{cuenta_id} actualizada."}
+        return {"ok": True, "message": f"Cuenta #{cuenta_id} actualizada."}
 
     async def _do_consulta_cambio(self, accion: dict) -> dict:
         monto = accion.get("monto", 1.0)
@@ -685,18 +695,26 @@ class ActionExecutor:
     async def _do_tool(self, accion: dict) -> dict:
         tool_name = accion.get("name", "")
         params = accion.get("params", {})
-        # Try built-in tools first
-        tool_result = self.tools.execute(tool_name, params)
-        if tool_result.startswith("Error: Unknown tool"):
-            # Try plugin tools
-            self.plugins.reload_all()
-            plugin_handler = self.plugins.get_tool_handler(tool_name)
-            if plugin_handler:
-                try:
-                    tool_result = plugin_handler(params)
-                except Exception as e:
-                    tool_result = f"Plugin tool error: {e}"
-        return {"data_response": tool_result}
+
+        # Route to MCP server
+        if self.mcp_manager and self.mcp_manager.has_tool(tool_name):
+            try:
+                result = await self.mcp_manager.call_tool(tool_name, params)
+                return {"ok": True, "data_response": result}
+            except Exception as e:
+                return {"ok": False, "message": f"Error en tool {tool_name}: {e}"}
+
+        # Fallback to plugin tools
+        self.plugins.reload_all()
+        plugin_handler = self.plugins.get_tool_handler(tool_name)
+        if plugin_handler:
+            try:
+                result = plugin_handler(params)
+                return {"ok": True, "data_response": result}
+            except Exception as e:
+                return {"ok": False, "message": f"Plugin tool error: {e}"}
+
+        return {"ok": False, "message": f"Tool desconocido: {tool_name}"}
 
     async def _do_cobro(self, accion: dict) -> dict:
         cobro_repo = self.repos.get("cobro")
@@ -707,7 +725,7 @@ class ActionExecutor:
                 "monto_total": accion["monto"],
                 "moneda": accion.get("moneda", "PEN"),
             })
-        return {}
+        return {"ok": True, "message": "Cobro registrado."}
 
     async def _do_consulta_consumo(self, accion: dict) -> dict:
         """Query energy consumption data for a specific time range."""
@@ -761,6 +779,45 @@ class ActionExecutor:
             logger.error(f"Error in consulta_consumo: {e}")
             return {"data_response": f"Error consultando consumo: {e}"}
 
+    async def _do_set_config_consumo(self, accion: dict) -> dict:
+        """Update consumption config (tarifa, etc.)."""
+        config_repo = self.repos.get("consumo_config")
+        if not config_repo:
+            return {"ok": False, "message": "No hay repositorio de configuracion de consumo."}
+        clave = accion.get("clave", "")
+        valor = accion.get("valor", "")
+        if not clave or not valor:
+            return {"ok": False, "message": "Falta clave o valor."}
+        await config_repo.set(clave, str(valor))
+        return {"ok": True, "message": f"Configuracion actualizada: {clave} = {valor}"}
+
+    async def _do_registrar_consumo(self, accion: dict) -> dict:
+        """Register a manual consumption reading (luz, agua, gas)."""
+        consumo_repo = self.repos.get("consumo")
+        if not consumo_repo:
+            return {"ok": False, "message": "No hay repositorio de consumo."}
+        tipo = accion.get("tipo_consumo", "luz")
+        valor = accion.get("valor")
+        if valor is None:
+            return {"ok": False, "message": "Falta el valor de consumo."}
+        unidad = accion.get("unidad", "kWh" if tipo == "luz" else "m3")
+        fecha = accion.get("fecha") or _now_lima()
+        costo = accion.get("costo")
+        consumo_id = await consumo_repo.create(
+            tipo=tipo, valor=float(valor), unidad=unidad,
+            fecha=fecha, source="manual", costo=float(costo) if costo else None,
+        )
+        # Set day_kwh so manual entries show up in charts
+        if tipo == "luz" and unidad == "kWh":
+            from src.database.db import get_db
+            db = await get_db()
+            await db.execute(
+                "UPDATE consumos SET day_kwh = ? WHERE id = ?",
+                (float(valor), consumo_id),
+            )
+            await db.commit()
+        return {"ok": True, "message": f"Consumo registrado: {valor} {unidad} ({tipo}) id={consumo_id}"}
+
     async def _do_tipo_cambio_sunat(self, accion: dict) -> dict:
         tc = await self.sunat.get_tipo_cambio()
         return {"data_response": f"Tipo de cambio SUNAT ({tc['fuente']}):\nCompra: S/{tc['compra']}\nVenta: S/{tc['venta']}"}
@@ -777,7 +834,7 @@ class ActionExecutor:
                 "fecha_corte": accion.get("fecha_corte", 1),
                 "fecha_pago": accion.get("fecha_pago", 15),
             })
-        return {}
+        return {"ok": True, "message": "Tarjeta registrada."}
 
     async def _do_memorizar(self, accion: dict) -> dict:
         memoria_repo = self.repos.get("memoria")
@@ -788,45 +845,7 @@ class ActionExecutor:
                 valor=accion.get("valor", ""),
             )
             logger.info(f"Memorized: [{accion.get('categoria')}] {accion.get('clave')}")
-        return {}
-
-    async def _do_recordatorio(self, accion: dict) -> dict:
-        recordatorio_repo = self.repos.get("recordatorio")
-        if not recordatorio_repo:
-            return {}
-        mensaje = accion.get("mensaje", "")
-        hora = accion.get("hora", "09:00")
-        dias = accion.get("dias", "todos")
-        rec_id = await recordatorio_repo.save(mensaje=mensaje, hora=hora, dias=dias)
-        logger.info(f"Recordatorio #{rec_id} saved: {mensaje} @ {hora} ({dias})")
-        return {"data_response": f"Recordatorio #{rec_id} creado."}
-
-    async def _do_eliminar_recordatorio(self, accion: dict) -> dict:
-        recordatorio_repo = self.repos.get("recordatorio")
-        if not recordatorio_repo:
-            return {}
-        rec_id = accion.get("recordatorio_id") or accion.get("id")
-        if not rec_id:
-            return {"data_response": "Necesito el ID del recordatorio para eliminarlo."}
-        await recordatorio_repo.delete(rec_id)
-        return {"data_response": f"Recordatorio #{rec_id} eliminado."}
-
-    async def _do_actualizar_recordatorio(self, accion: dict) -> dict:
-        recordatorio_repo = self.repos.get("recordatorio")
-        if not recordatorio_repo:
-            return {}
-        rec_id = accion.get("recordatorio_id") or accion.get("id")
-        if not rec_id:
-            return {"data_response": "Necesito el ID del recordatorio para actualizarlo."}
-        # Delete old and recreate (repo doesn't support update)
-        await recordatorio_repo.delete(rec_id)
-        mensaje = accion.get("mensaje", "")
-        hora = accion.get("hora", "09:00")
-        dias = accion.get("dias", "todos")
-        if mensaje:
-            new_id = await recordatorio_repo.save(mensaje=mensaje, hora=hora, dias=dias)
-            return {"data_response": f"Recordatorio actualizado (nuevo #{new_id})."}
-        return {"data_response": f"Recordatorio #{rec_id} eliminado."}
+        return {"ok": True, "message": "Memorizado."}
 
     async def _do_importar_calendario(self, accion: dict) -> dict:
         # Calendar import now handled via MCP tools (get_events, etc.)

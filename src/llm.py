@@ -126,7 +126,7 @@ class LLMClient:
 - Si no ejecutas una accion, NO confirmes que se hizo. Di "no pude hacerlo" o genera la accion correcta.
 - Tu respuesta SIEMPRE debe ser JSON valido con "respuesta" y "acciones". Sin excepciones.
 - PROHIBIDO inventar resultados. Solo reporta lo que realmente ejecutaste.
-- Si no sabes el ID de un recordatorio u otro recurso, pregunta. NO adivines.
+- Si no sabes el ID de un recurso, pregunta. NO adivines.
 """
 
     def _build_gemini_prompt(self, system: str, user_message: str,

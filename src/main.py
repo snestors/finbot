@@ -163,7 +163,6 @@ def run_app():
     from src.repository.cobro_repo import CobroRepo
     from src.repository.tarjeta_repo import TarjetaRepo
     from src.repository.memoria_repo import MemoriaRepo
-    from src.repository.recordatorio_repo import RecordatorioRepo
     from src.repository.gasto_cuota_repo import GastoCuotaRepo
     from src.repository.tipo_cambio_repo import TipoCambioRepo
     from src.repository.transferencia_repo import TransferenciaRepo
@@ -175,7 +174,6 @@ def run_app():
     from src.services.document_parser import DocumentParser
     from src.services.budget import BudgetService
     from src.services.scheduler import SchedulerService
-    from src.services.google_service import GoogleService
     from src.services.mcp_manager import MCPManager
     from src.channels.whatsapp import WhatsAppChannel
     from src.channels.web import WebSocketManager, create_app
@@ -246,7 +244,6 @@ def run_app():
     cobro_repo = CobroRepo()
     tarjeta_repo = TarjetaRepo()
     memoria_repo = MemoriaRepo()
-    recordatorio_repo = RecordatorioRepo()
     gasto_cuota_repo = GastoCuotaRepo()
     tipo_cambio_repo = TipoCambioRepo()
     transferencia_repo = TransferenciaRepo()
@@ -308,20 +305,17 @@ def run_app():
         "gasto": gasto_repo, "ingreso": ingreso_repo, "deuda": deuda_repo,
         "presupuesto": presupuesto_repo, "perfil": perfil_repo, "cuenta": cuenta_repo,
         "cobro": cobro_repo, "tarjeta": tarjeta_repo, "memoria": memoria_repo,
-        "recordatorio": recordatorio_repo, "mensaje": mensaje_repo,
+        "mensaje": mensaje_repo,
         "transferencia": transferencia_repo, "pago_tarjeta": pago_tarjeta_repo,
         "movimiento": movimiento_repo, "tarjeta_periodo": tarjeta_periodo_repo,
         "movimiento_cuota": movimiento_cuota_repo,
         "consumo": consumo_repo, "pago_consumo": pago_consumo_repo,
         "consumo_config": consumo_config_repo,
         "sonoff_service": sonoff_service,
-        "google_service": GoogleService(google_email_repo=None),
     }
 
-    from src.agent.tools import AgentTools
     executor = ActionExecutor(
         repos=repos,
-        tools=AgentTools(),
         currency_service=currency_service,
         sunat_service=sunat_service,
         budget_service=budget_service,
@@ -356,7 +350,6 @@ def run_app():
         budget_service=budget_service,
         perfil_repo=perfil_repo,
         cobro_repo=cobro_repo,
-        recordatorio_repo=recordatorio_repo,
         tarjeta_repo=tarjeta_repo,
         sunat_service=sunat_service,
         tipo_cambio_repo=tipo_cambio_repo,
@@ -365,6 +358,7 @@ def run_app():
         tarjeta_periodo_repo=tarjeta_periodo_repo,
         sonoff_service=sonoff_service,
         consumo_repo=consumo_repo,
+        mcp_manager=mcp_manager,
     )
 
     # ---- Lifespan ----
@@ -407,7 +401,6 @@ def run_app():
         gasto_cuota_repo=gasto_cuota_repo,
         tipo_cambio_repo=tipo_cambio_repo,
         memoria_repo=memoria_repo,
-        recordatorio_repo=recordatorio_repo,
         transferencia_repo=transferencia_repo,
         pago_tarjeta_repo=pago_tarjeta_repo,
         whatsapp_channel=whatsapp,
@@ -420,7 +413,6 @@ def run_app():
         consumo_repo=consumo_repo,
         pago_consumo_repo=pago_consumo_repo,
         consumo_config_repo=consumo_config_repo,
-        google_service=repos["google_service"],
         gasto_fijo_repo=gasto_fijo_repo,
         llm_usage_repo=llm_usage_repo,
     )

@@ -155,10 +155,13 @@ function LuzEnVivo({ mes: _mes, queryClient: _qc }: { mes: string; queryClient: 
 function LuzGrafico() {
   const [desde, setDesde] = useState(() => {
     const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return d.toISOString().slice(0, 10);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
   });
-  const [hasta, setHasta] = useState(todayStr);
+  const [hasta, setHasta] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
+  });
   const [slice, setSlice] = useState(1);
 
   const { data: chartData, isLoading } = useQuery({
@@ -168,15 +171,29 @@ function LuzGrafico() {
     ),
   });
 
+  const { data: configData } = useQuery({
+    queryKey: ['consumos-config'],
+    queryFn: () => get<Record<string, string>>('/api/consumos/config'),
+  });
+  const costoKwh = parseFloat(configData?.costo_kwh_luz ?? '0.75');
+
   const formatted = useMemo(() => {
     if (!chartData) return [];
-    return chartData.map((d: any) => ({
-      ...d,
-      label: d.fecha?.slice(5, 16)?.replace('T', ' ') ?? '',
-      power_w: d.power_w != null ? Math.round(d.power_w * 10) / 10 : null,
-      current_a: d.current_a != null ? Math.round(d.current_a * 100) / 100 : null,
-    }));
-  }, [chartData]);
+    let acumKwh = 0;
+    return chartData.map((d: any) => {
+      const kwh = d.day_kwh != null ? d.day_kwh : 0;
+      acumKwh += slice >= 24 ? kwh : 0;
+      const costoAcum = slice >= 24 ? Math.round(acumKwh * costoKwh * 100) / 100 : null;
+      const costoPoint = kwh > 0 ? Math.round(kwh * costoKwh * 100) / 100 : null;
+      return {
+        ...d,
+        label: d.fecha?.slice(5, 16)?.replace('T', ' ') ?? '',
+        power_w: d.power_w != null ? Math.round(d.power_w * 10) / 10 : null,
+        current_a: d.current_a != null ? Math.round(d.current_a * 100) / 100 : null,
+        costo: slice >= 24 ? costoAcum : costoPoint,
+      };
+    });
+  }, [chartData, costoKwh, slice]);
 
   const exportCSV = useCallback(() => {
     if (!formatted.length) return;
@@ -246,6 +263,7 @@ function LuzGrafico() {
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line yAxisId="left" type="monotone" dataKey="power_w" stroke="#eab308" name="Potencia (W)" dot={false} strokeWidth={2} />
               <Line yAxisId="right" type="monotone" dataKey="current_a" stroke="#3b82f6" name="Corriente (A)" dot={false} strokeWidth={2} />
+              <Line yAxisId="right" type="monotone" dataKey="costo" stroke="#22c55e" name="Costo (S/)" dot={false} strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -398,7 +416,24 @@ function LuzConfig() {
   });
 
   const currentCosto = costoKwh || loaded || '0.75';
-  const monthKwh = stats?.month_kwh ?? 0;
+
+  // Ciclo de facturacion: 7 del mes actual → 7 del mes siguiente
+  const cicloDesde = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
+  }, []);
+  const cicloHasta = useMemo(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
+  }, []);
+
+  const { data: periodoData } = useQuery({
+    queryKey: ['consumos-periodo', cicloDesde, cicloHasta],
+    queryFn: () => get<any>(`/api/consumos/periodo?tipo=luz&desde=${cicloDesde}T00:00:00&hasta=${cicloHasta}T23:59:59`),
+  });
+
+  const monthKwh = periodoData?.kwh_total ?? stats?.month_kwh ?? 0;
   const estimado = monthKwh * parseFloat(currentCosto || '0');
 
   return (

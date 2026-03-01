@@ -91,6 +91,15 @@ class MessageBus:
 
         return result
 
+    async def emit_activity(self, step: str, detail: str = ""):
+        """Broadcast processing activity to web clients for step-by-step UI."""
+        await self.ws_manager.broadcast({
+            "type": "agent_activity",
+            "step": step,
+            "detail": detail,
+            "timestamp": self._now_iso(),
+        })
+
     async def send_proactive(self, message: str):
         bot_msg = await self.mensaje_repo.save({
             "role": "bot",

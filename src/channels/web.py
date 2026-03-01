@@ -42,14 +42,13 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                perfil_repo=None, cuenta_repo=None, cobro_repo=None,
                tarjeta_repo=None, currency_service=None, sunat_service=None,
                gasto_cuota_repo=None, tipo_cambio_repo=None,
-               memoria_repo=None, recordatorio_repo=None,
+               memoria_repo=None,
                transferencia_repo=None, pago_tarjeta_repo=None,
                lifespan=None,
                movimiento_repo=None, tarjeta_periodo_repo=None,
                movimiento_cuota_repo=None,
                sonoff_service=None, consumo_repo=None,
                pago_consumo_repo=None, consumo_config_repo=None,
-               google_service=None,
                gasto_fijo_repo=None,
                llm_usage_repo=None) -> FastAPI:
 
@@ -559,28 +558,6 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         await memoria_repo.delete(memoria_id)
         return {"ok": True}
 
-    # --- Recordatorios ---
-    @app.get("/api/recordatorios")
-    async def get_recordatorios():
-        if not recordatorio_repo:
-            return []
-        return await recordatorio_repo.get_activos()
-
-    @app.delete("/api/recordatorios/{recordatorio_id}")
-    async def delete_recordatorio(recordatorio_id: int):
-        if not recordatorio_repo:
-            return {"error": "Recordatorios no disponible"}
-        # Sync: delete Calendar event if linked
-        if google_service:
-            try:
-                rec = await recordatorio_repo.get_by_id(recordatorio_id)
-                if rec and rec.get("google_event_id"):
-                    google_service.delete_calendar_event(rec["google_event_id"])
-            except Exception as e:
-                logger.warning(f"Calendar delete failed for rec #{recordatorio_id}: {e}")
-        await recordatorio_repo.delete(recordatorio_id)
-        return {"ok": True}
-
     # --- System Stats (RPi) via WebSocket ---
     async def _read_system_stats() -> dict:
         stats: dict = {}
@@ -859,26 +836,11 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
     @app.get("/api/logs/stream")
     async def logs_stream():
         from starlette.responses import StreamingResponse
-        import collections
-
-        # Read last N lines from the log
-        log_lines: collections.deque = collections.deque(maxlen=200)
-        log_path = Path("data/finbot.log")
-        if log_path.exists():
-            try:
-                with open(log_path, "r") as f:
-                    for line in f:
-                        log_lines.append(line.rstrip())
-            except Exception:
-                pass
 
         async def event_generator():
-            # Send existing lines
-            for line in log_lines:
-                yield f"data: {json.dumps({'line': line})}\n\n"
-            # Then follow journalctl
+            # Follow journalctl with last 200 lines of history
             proc = await asyncio.create_subprocess_exec(
-                "journalctl", "-u", "finbot", "-f", "-n", "0", "--no-pager",
+                "journalctl", "-u", "finbot", "-f", "-n", "200", "--no-pager",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )

@@ -1,4 +1,5 @@
 """Generic MCP client manager — connects to N MCP servers, discovers tools, routes calls."""
+import asyncio
 import json
 import logging
 import os
@@ -41,10 +42,7 @@ class MCPManager:
             logger.error(f"[mcp] Invalid config {config_path}: {e}")
             return
 
-        for server in servers:
-            if not server.get("enabled", True):
-                logger.info(f"[mcp] Skipping disabled server: {server.get('name', '?')}")
-                continue
+        async def _safe_connect(server):
             try:
                 await self.connect_server(
                     name=server["name"],
@@ -54,6 +52,16 @@ class MCPManager:
                 )
             except Exception as e:
                 logger.error(f"[mcp] Failed to connect '{server.get('name')}': {e}")
+
+        tasks = []
+        for server in servers:
+            if not server.get("enabled", True):
+                logger.info(f"[mcp] Skipping disabled server: {server.get('name', '?')}")
+                continue
+            tasks.append(_safe_connect(server))
+
+        if tasks:
+            await asyncio.gather(*tasks)
 
     async def connect_server(self, name: str, command: str,
                              args: list[str], env: dict = None):

@@ -73,25 +73,21 @@ Campos relevantes: monto, descripcion, moneda, cuenta_id
 ### tarjeta — Registrar tarjeta
 {"tipo": "tarjeta", "nombre": "Visa BCP", "banco": "BCP", "tipo_tarjeta": "credito", "ultimos_4": "4532", "limite_credito": 5000.0, "fecha_corte": 15, "fecha_pago": 5}
 
-## COMPATIBILIDAD LEGACY
-Estos tipos siguen funcionando y se convierten internamente a movimiento:
-- "gasto", "ingreso", "transferencia", "pago_tarjeta", "pago_deuda", "pago_cobro"
-- "actualizar_gasto" (usa gasto_id), "eliminar_gasto" (usa gasto_id)
-- "eliminar_gastos" (usa ids), "eliminar_gastos_excepto", "eliminar_gastos_periodo"
-- "actualizar_ingreso" (usa ingreso_id), "eliminar_ingreso" (usa ingreso_id)
-
 ## EJEMPLOS
 Usuario: "almuerzo 18 en KFC con yape"
-→ {"respuesta": "Listo, S/18 comida en KFC con Yape", "acciones": [{"tipo": "movimiento", "mov_tipo": "gasto", "monto": 18.0, "categoria": "comida", "descripcion": "almuerzo", "comercio": "KFC", "metodo_pago": "yape"}]}
+→ {"respuesta": "Registro S/18 comida en KFC con Yape", "acciones": [{"tipo": "movimiento", "mov_tipo": "gasto", "monto": 18.0, "categoria": "comida", "descripcion": "almuerzo", "comercio": "KFC", "metodo_pago": "yape"}]}
 
 Usuario: "sueldo 3500"
-→ {"respuesta": "Ingreso registrado: S/3500", "acciones": [{"tipo": "movimiento", "mov_tipo": "ingreso", "monto": 3500.0, "descripcion": "sueldo"}]}
+→ {"respuesta": "Registro ingreso S/3500", "acciones": [{"tipo": "movimiento", "mov_tipo": "ingreso", "monto": 3500.0, "descripcion": "sueldo"}]}
 
 Usuario: "saque 200 del BCP"
-→ {"respuesta": "Retiro S/200 del BCP a efectivo", "acciones": [{"tipo": "movimiento", "mov_tipo": "transferencia", "monto": 200.0, "cuenta_id": 1, "cuenta_destino_id": 2, "descripcion": "retiro ATM"}]}
+→ {"respuesta": "Registro retiro S/200 del BCP a efectivo", "acciones": [{"tipo": "movimiento", "mov_tipo": "transferencia", "monto": 200.0, "cuenta_id": 1, "cuenta_destino_id": 2, "descripcion": "retiro ATM"}]}
 
 Usuario: "pague 500 a la visa del BCP"
-→ {"respuesta": "Pago S/500 a Visa BCP", "acciones": [{"tipo": "movimiento", "mov_tipo": "pago_tarjeta", "monto": 500.0, "tarjeta_id": 1, "cuenta_id": 1}]}
+→ {"respuesta": "Registro pago S/500 a Visa BCP", "acciones": [{"tipo": "movimiento", "mov_tipo": "pago_tarjeta", "monto": 500.0, "tarjeta_id": 1, "cuenta_id": 1}]}
+
+Usuario: "elimina el #5"
+→ {"respuesta": "Elimino el #5", "acciones": [{"tipo": "eliminar_movimiento", "movimiento_id": 5}]}
 
 Usuario: "quedate con el #34 y #37, borra el resto"
-→ {"respuesta": "Listo, me quedo con #34 y #37", "acciones": [{"tipo": "eliminar_gastos_excepto", "periodo": "hoy", "conservar_ids": [34, 37]}]}
+→ {"respuesta": "Conservo #34 y #37, elimino el resto", "acciones": [{"tipo": "eliminar_gastos_excepto", "periodo": "hoy", "conservar_ids": [34, 37]}]}

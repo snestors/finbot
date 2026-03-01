@@ -105,12 +105,20 @@ class MessageRouter:
         self._analysis_re = [re.compile(p, re.IGNORECASE) for p in ANALYSIS_PATTERNS]
         self._admin_re = [re.compile(p, re.IGNORECASE) for p in ADMIN_PATTERNS]
 
+    # Hard priority: these words ALWAYS route to a specific agent, no scoring
+    _PRIORITY_ADMIN = re.compile(r'\b(?:recuerdame|avisame|no\s+me\s+dejes\s+olvidar)\b', re.IGNORECASE)
+
     async def route(self, text: str, history: list[dict] = None) -> str:
         """Returns one of: 'finance', 'analysis', 'admin', 'chat'."""
         text_clean = text.strip()
 
         if len(text_clean) < 2:
             return CHAT
+
+        # Priority overrides — skip scoring entirely
+        if self._PRIORITY_ADMIN.search(text):
+            logger.debug(f"Router: '{text_clean[:40]}' → admin (priority keyword)")
+            return ADMIN
 
         scores = {
             FINANCE: self._score(text, self._finance_re),
@@ -167,7 +175,7 @@ class MessageRouter:
         if len(text) < 20:
             finance_words = ['gasto', 'registr', 'monto', 'pago', 'cuenta', 's/', 'tarjeta', 'cuota', 'credito', 'banco', 'digito']
             analysis_words = ['presupuesto', 'resumen', 'total', 'cuanto', 'limite mensual', 'kwh', 'consumo', 'categoria']
-            admin_words = ['recordatorio', 'memoria', 'perfil', 'codigo', 'agente']
+            admin_words = ['memoria', 'perfil', 'codigo', 'agente', 'calendario', 'calendar', 'gmail', 'drive']
             if any(w in lb for w in finance_words):
                 boosted[FINANCE] += 2
             if any(w in lb for w in analysis_words):
