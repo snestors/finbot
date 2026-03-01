@@ -1,7 +1,7 @@
 #!/bin/bash
 # Auto-recovery script for FinBot.
 # Called by systemd ExecStopPost ONLY on actual crashes.
-# Rolls back to last git auto-checkpoint and restarts.
+# SAFE: only logs and restarts. Does NOT revert git changes.
 
 PROJECT_DIR="/home/nestor/finbot"
 LOG="/tmp/finbot-recovery.log"
@@ -33,16 +33,8 @@ fi
 
 cd "$PROJECT_DIR" || exit 1
 
-# Find last auto-checkpoint
-CHECKPOINT=$(git log --oneline -20 | grep "\[auto-checkpoint\]" | head -1 | awk '{print $1}')
-
-if [ -z "$CHECKPOINT" ]; then
-    echo "$(date): No auto-checkpoint found. Trying git stash." >> "$LOG"
-    git stash >> "$LOG" 2>&1
-else
-    echo "$(date): Rolling back to checkpoint $CHECKPOINT (attempt $COUNT)" >> "$LOG"
-    git reset --hard "$CHECKPOINT" >> "$LOG" 2>&1
-fi
+# Just log the crash — do NOT revert git changes
+echo "$(date): Service crashed (attempt $COUNT/$MAX_RETRIES). Letting systemd restart." >> "$LOG"
+echo "$(date): Current HEAD: $(git log --oneline -1)" >> "$LOG"
 
 # Clear retry count on next successful start (handled by ExecStartPost)
-echo "$(date): Rollback complete, systemd will retry start" >> "$LOG"

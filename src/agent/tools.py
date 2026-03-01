@@ -95,35 +95,15 @@ def _preflight_check() -> str | None:
 
 
 def _git_checkpoint(message: str) -> str | None:
-    """Create a git checkpoint before dangerous operations. Returns commit hash or None."""
+    """Log a checkpoint marker. Does NOT auto-commit or revert — that caused data loss."""
     try:
-        # Stage all changes in project
-        subprocess.run(
-            ["git", "add", "-A"],
-            cwd=str(PROJECT_ROOT), capture_output=True, timeout=10,
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=5,
         )
-        # Check if there's anything to commit
-        status = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"],
-            cwd=str(PROJECT_ROOT), capture_output=True, timeout=5,
-        )
-        if status.returncode == 0:
-            return None  # Nothing to commit
-
-        result = subprocess.run(
-            ["git", "commit", "-m", f"[auto-checkpoint] {message}"],
-            cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0:
-            # Get commit hash
-            hash_result = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=5,
-            )
-            commit_hash = hash_result.stdout.strip()
-            logger.info(f"Git checkpoint created: {commit_hash} — {message}")
-            return commit_hash
-        return None
+        commit_hash = hash_result.stdout.strip()
+        logger.info(f"Git checkpoint noted: {commit_hash} — {message}")
+        return commit_hash
     except Exception as e:
         logger.warning(f"Git checkpoint failed: {e}")
         return None
@@ -316,36 +296,19 @@ class AgentTools:
 
     @staticmethod
     def rollback() -> str:
-        """Rollback to last git checkpoint and restart."""
+        """Show recent commits for manual rollback. Does NOT auto-revert — that caused data loss."""
         try:
-            # Find last auto-checkpoint
             log = subprocess.run(
-                ["git", "log", "--oneline", "-20"],
+                ["git", "log", "--oneline", "-10"],
                 cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=10,
             )
-            lines = log.stdout.strip().split("\n")
-            checkpoint = None
-            for line in lines[1:]:  # Skip current HEAD
-                if "[auto-checkpoint]" in line:
-                    checkpoint = line.split()[0]
-                    break
-
-            if not checkpoint:
-                return "Error: No auto-checkpoint found to rollback to"
-
-            # Hard reset to checkpoint
-            subprocess.run(
-                ["git", "reset", "--hard", checkpoint],
-                cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=10,
+            commits = log.stdout.strip()
+            return (
+                f"Auto-rollback disabled (caused data loss). Recent commits:\n{commits}\n\n"
+                "To rollback manually: git checkout <hash> -- <file>"
             )
-            # Restart service
-            subprocess.run(
-                ["sudo", "systemctl", "restart", "finbot"],
-                capture_output=True, text=True, timeout=10,
-            )
-            return f"OK: Rolled back to {checkpoint} and restarting"
         except Exception as e:
-            return f"Error rolling back: {e}"
+            return f"Error: {e}"
 
     @staticmethod
     def rpi_status() -> str:
