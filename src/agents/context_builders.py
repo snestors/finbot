@@ -328,8 +328,9 @@ async def build_analysis_context(repos: dict) -> str:
     return "\n".join(parts)
 
 
-async def build_admin_context(repos: dict, registry_info: list[dict] = None) -> str:
-    """Context for AdminAgent: profile, memory, reminders, agent registry."""
+async def build_admin_context(repos: dict, registry_info: list[dict] = None,
+                              mcp_tools: str = "") -> str:
+    """Context for AdminAgent: profile, memory, reminders, agent registry, MCP tools."""
     parts = []
 
     # Profile
@@ -392,6 +393,10 @@ async def build_admin_context(repos: dict, registry_info: list[dict] = None) -> 
                 parts.append("Plugins: ninguno instalado (crear en plugins/)")
     except Exception:
         pass
+
+    # MCP tools
+    if mcp_tools:
+        parts.append(mcp_tools)
 
     return "\n".join(parts)
 

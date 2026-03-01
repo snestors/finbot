@@ -49,7 +49,9 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                movimiento_cuota_repo=None,
                sonoff_service=None, consumo_repo=None,
                pago_consumo_repo=None, consumo_config_repo=None,
-               google_service=None) -> FastAPI:
+               google_service=None,
+               gasto_fijo_repo=None,
+               llm_usage_repo=None) -> FastAPI:
 
     app = FastAPI(title="FinBot", docs_url="/api/docs", lifespan=lifespan)
 
@@ -780,6 +782,118 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         for clave, valor in data.items():
             await consumo_config_repo.set(clave, str(valor))
         return {"ok": True}
+
+    # --- Gastos Fijos ---
+    @app.get("/api/gastos-fijos")
+    async def get_gastos_fijos(solo_activos: bool = True):
+        if not gasto_fijo_repo:
+            return []
+        return await gasto_fijo_repo.get_all(solo_activos=solo_activos)
+
+    @app.post("/api/gastos-fijos")
+    async def create_gasto_fijo(data: dict):
+        if not gasto_fijo_repo:
+            return {"error": "No disponible"}
+        gf_id = await gasto_fijo_repo.create(
+            nombre=data.get("nombre", ""),
+            monto=data.get("monto", 0),
+            frecuencia=data.get("frecuencia", "mensual"),
+            dia=data.get("dia", 1),
+            **{k: v for k, v in data.items() if k not in ("nombre", "monto", "frecuencia", "dia")}
+        )
+        return {"id": gf_id}
+
+    @app.post("/api/gastos-fijos/{gf_id}/toggle")
+    async def toggle_gasto_fijo(gf_id: int):
+        if not gasto_fijo_repo:
+            return {"error": "No disponible"}
+        gf = await gasto_fijo_repo.get_by_id(gf_id)
+        if not gf:
+            return JSONResponse({"error": "No encontrado"}, 404)
+        if gf.get("activo"):
+            await gasto_fijo_repo.desactivar(gf_id)
+        else:
+            await gasto_fijo_repo.activar(gf_id)
+        return {"ok": True}
+
+    @app.delete("/api/gastos-fijos/{gf_id}")
+    async def delete_gasto_fijo(gf_id: int):
+        if not gasto_fijo_repo:
+            return {"error": "No disponible"}
+        await gasto_fijo_repo.delete(gf_id)
+        return {"ok": True}
+
+    # --- LLM Usage / Analytics ---
+    @app.get("/api/llm-usage/summary")
+    async def llm_usage_summary(mes: str = ""):
+        if not llm_usage_repo:
+            return {}
+        rows = await llm_usage_repo.get_summary_month(mes or None)
+        # Aggregate into single summary
+        total_calls = sum(r["calls"] for r in rows)
+        total_input = sum(r["total_input"] for r in rows)
+        total_output = sum(r["total_output"] for r in rows)
+        cost = llm_usage_repo.estimate_cost(total_input, total_output)
+        return {"calls": total_calls, "input_tokens": total_input,
+                "output_tokens": total_output, "cost_usd": cost, "by_model": rows}
+
+    @app.get("/api/llm-usage/daily")
+    async def llm_usage_daily(mes: str = ""):
+        if not llm_usage_repo:
+            return []
+        return await llm_usage_repo.get_daily_breakdown(mes or None)
+
+    @app.get("/api/llm-usage/by-caller")
+    async def llm_usage_by_caller(mes: str = ""):
+        if not llm_usage_repo:
+            return []
+        return await llm_usage_repo.get_by_caller(mes or None)
+
+    @app.get("/api/llm-usage/recent")
+    async def llm_usage_recent(limit: int = 30):
+        if not llm_usage_repo:
+            return []
+        return await llm_usage_repo.get_recent(limit)
+
+    # --- Logs Stream (SSE) ---
+    @app.get("/api/logs/stream")
+    async def logs_stream():
+        from starlette.responses import StreamingResponse
+        import collections
+
+        # Read last N lines from the log
+        log_lines: collections.deque = collections.deque(maxlen=200)
+        log_path = Path("data/finbot.log")
+        if log_path.exists():
+            try:
+                with open(log_path, "r") as f:
+                    for line in f:
+                        log_lines.append(line.rstrip())
+            except Exception:
+                pass
+
+        async def event_generator():
+            # Send existing lines
+            for line in log_lines:
+                yield f"data: {json.dumps({'line': line})}\n\n"
+            # Then follow journalctl
+            proc = await asyncio.create_subprocess_exec(
+                "journalctl", "-u", "finbot", "-f", "-n", "0", "--no-pager",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    yield f"data: {json.dumps({'line': line.decode().rstrip()})}\n\n"
+            except asyncio.CancelledError:
+                proc.kill()
+            finally:
+                proc.kill()
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     # --- Health ---
     @app.get("/api/health")

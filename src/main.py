@@ -176,6 +176,7 @@ def run_app():
     from src.services.budget import BudgetService
     from src.services.scheduler import SchedulerService
     from src.services.google_service import GoogleService
+    from src.services.mcp_manager import MCPManager
     from src.channels.whatsapp import WhatsAppChannel
     from src.channels.web import WebSocketManager, create_app
     from src.bus.message_bus import MessageBus
@@ -266,7 +267,11 @@ def run_app():
     from src.repository.consumo_repo import ConsumoRepo
     from src.repository.pago_consumo_repo import PagoConsumoRepo
     from src.repository.consumo_config_repo import ConsumoConfigRepo
+    from src.repository.gasto_fijo_repo import GastoFijoRepo
+    from src.repository.llm_usage_repo import LLMUsageRepo
     from src.services.sonoff import SonoffService
+    gasto_fijo_repo = GastoFijoRepo()
+    llm_usage_repo = LLMUsageRepo()
     consumo_repo = ConsumoRepo()
     pago_consumo_repo = PagoConsumoRepo()
     consumo_config_repo = ConsumoConfigRepo()
@@ -274,6 +279,8 @@ def run_app():
         device_id="10027d4fc7",
         device_key="42224a14-5704-4167-96d2-516df73614e5",
     )
+
+    mcp_manager = MCPManager()
 
     whatsapp = WhatsAppChannel()
     ws_manager = WebSocketManager()
@@ -291,7 +298,7 @@ def run_app():
     router = MessageRouter(llm_client=llm)  # LLM fallback for ambiguous messages
     registry = AgentRegistry()
 
-    admin_agent = AdminAgent(llm, registry=registry)
+    admin_agent = AdminAgent(llm, registry=registry, mcp_manager=mcp_manager)
     registry.register("finance", FinanceAgent(llm))
     registry.register("analysis", AnalysisAgent(llm))
     registry.register("admin", admin_agent)
@@ -321,6 +328,7 @@ def run_app():
         gasto_cuota_repo=gasto_cuota_repo,
         movimiento_cuota_repo=movimiento_cuota_repo,
         tarjeta_periodo_repo=tarjeta_periodo_repo,
+        mcp_manager=mcp_manager,
     )
 
     processor = Processor(
@@ -364,11 +372,21 @@ def run_app():
     async def lifespan(app):
         await init_db()
         logger.info("SQLite database ready")
+        # Connect MCP servers
+        try:
+            await mcp_manager.connect_from_config(settings.mcp_servers_config)
+            if mcp_manager.connected_servers:
+                logger.info(f"MCP servers connected: {mcp_manager.connected_servers} ({mcp_manager.total_tools} tools)")
+            else:
+                logger.info("No MCP servers enabled")
+        except Exception as e:
+            logger.warning(f"MCP startup error (non-fatal): {e}")
         await sonoff_service.start()
         scheduler.start()
         yield
         scheduler.stop()
         await sonoff_service.stop()
+        await mcp_manager.close()
         await whatsapp.close()
         await close_db()
         logger.info("Cleanup complete")
@@ -403,6 +421,8 @@ def run_app():
         pago_consumo_repo=pago_consumo_repo,
         consumo_config_repo=consumo_config_repo,
         google_service=repos["google_service"],
+        gasto_fijo_repo=gasto_fijo_repo,
+        llm_usage_repo=llm_usage_repo,
     )
 
     # ---- Start ----

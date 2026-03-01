@@ -12,6 +12,9 @@ import Presupuestos from './pages/Presupuestos';
 import TipoCambio from './pages/TipoCambio';
 import Config from './pages/Config';
 import Consumos from './pages/Consumos';
+import Analytics from './pages/Analytics';
+import GastosFijos from './pages/GastosFijos';
+import Logs from './pages/Logs';
 import Login from './pages/Login';
 
 const queryClient = new QueryClient({
@@ -41,6 +44,9 @@ export default function App() {
             <Route path="/consumos" element={<Consumos />} />
             <Route path="/presupuestos" element={<Presupuestos />} />
             <Route path="/tipo-cambio" element={<TipoCambio />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/gastos-fijos" element={<GastosFijos />} />
+            <Route path="/logs" element={<Logs />} />
             <Route path="/config" element={<Config />} />
           </Route>
         </Routes>

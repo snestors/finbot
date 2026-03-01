@@ -1,0 +1,12 @@
+[
+  {
+    "name": "google_workspace",
+    "command": "/home/nestor/finbot/venv/bin/workspace-mcp",
+    "args": ["--single-user", "--tools", "calendar", "gmail"],
+    "env": {
+      "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+      "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
+    },
+    "enabled": false
+  }
+]

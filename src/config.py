@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     tunnel_name: str = "finbot"
     tunnel_domain: str = ""
 
+    # MCP servers
+    mcp_servers_config: str = "data/mcp_servers.json"
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+
     # RPi optimizations
     uvicorn_workers: int = 1
     max_chat_history_cache: int = 100

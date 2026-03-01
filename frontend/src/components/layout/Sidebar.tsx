@@ -12,6 +12,9 @@ const links = [
   { to: '/consumos', label: 'Consumos', icon: '⚡' },
   { to: '/presupuestos', label: 'Presupuestos', icon: '🎯' },
   { to: '/tipo-cambio', label: 'Tipo Cambio', icon: '💱' },
+  { to: '/analytics', label: 'Analytics', icon: '📈' },
+  { to: '/gastos-fijos', label: 'Gastos Fijos', icon: '📌' },
+  { to: '/logs', label: 'Logs', icon: '📝' },
   { to: '/config', label: 'Config', icon: '⚙️' },
 ];
 

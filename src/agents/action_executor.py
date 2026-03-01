@@ -23,7 +23,8 @@ class ActionExecutor:
                  budget_service=None,
                  gasto_cuota_repo=None,
                  movimiento_cuota_repo=None,
-                 tarjeta_periodo_repo=None):
+                 tarjeta_periodo_repo=None,
+                 mcp_manager=None):
         self.repos = repos
         self.tools = tools or AgentTools()
         self.currency = currency_service or CurrencyService()
@@ -32,6 +33,7 @@ class ActionExecutor:
         self.gasto_cuota_repo = gasto_cuota_repo
         self.movimiento_cuota_repo = movimiento_cuota_repo
         self.tarjeta_periodo_repo = tarjeta_periodo_repo
+        self.mcp_manager = mcp_manager
 
         # Load plugins
         self.plugins = PluginManager()
@@ -96,6 +98,17 @@ class ActionExecutor:
                 except Exception as e:
                     logger.error(f"Plugin action {tipo} error: {e}", exc_info=True)
                     return {"data_response": f"Error en plugin {tipo}: {e}"}
+
+            # MCP fallback — route to connected MCP servers
+            if self.mcp_manager and self.mcp_manager.has_tool(tipo):
+                try:
+                    # Pass all action fields except 'tipo' as arguments
+                    mcp_args = {k: v for k, v in accion.items() if k != "tipo" and v is not None}
+                    result = await self.mcp_manager.call_tool(tipo, mcp_args)
+                    return {"data_response": result}
+                except Exception as e:
+                    logger.error(f"MCP tool {tipo} error: {e}", exc_info=True)
+                    return {"data_response": f"Error en MCP tool {tipo}: {e}"}
 
             logger.warning(f"Unknown action type: {tipo}")
             return {}
@@ -786,22 +799,7 @@ class ActionExecutor:
         dias = accion.get("dias", "todos")
         rec_id = await recordatorio_repo.save(mensaje=mensaje, hora=hora, dias=dias)
         logger.info(f"Recordatorio #{rec_id} saved: {mensaje} @ {hora} ({dias})")
-
-        # Sync to Google Calendar
-        google_svc = self.repos.get("google_service")
-        cal_note = ""
-        if google_svc:
-            event_id = google_svc.create_calendar_event(mensaje, hora, dias)
-            if event_id:
-                await recordatorio_repo.update_google_event_id(rec_id, event_id)
-                cal_note = " (sincronizado con Google Calendar)"
-                logger.info(f"Recordatorio #{rec_id} synced to Calendar: {event_id}")
-            else:
-                logger.warning(f"Recordatorio #{rec_id} Calendar sync failed")
-        else:
-            logger.warning("google_service not found in repos, skipping Calendar sync")
-
-        return {"data_response": f"Recordatorio #{rec_id} creado{cal_note}."}
+        return {"data_response": f"Recordatorio #{rec_id} creado."}
 
     async def _do_eliminar_recordatorio(self, accion: dict) -> dict:
         recordatorio_repo = self.repos.get("recordatorio")
@@ -810,17 +808,6 @@ class ActionExecutor:
         rec_id = accion.get("recordatorio_id") or accion.get("id")
         if not rec_id:
             return {"data_response": "Necesito el ID del recordatorio para eliminarlo."}
-        rec = await recordatorio_repo.get_by_id(rec_id)
-        if not rec:
-            return {"data_response": f"No encontré el recordatorio #{rec_id}."}
-        # Delete Calendar event if linked
-        google_svc = self.repos.get("google_service")
-        if google_svc and rec.get("google_event_id"):
-            try:
-                google_svc.delete_calendar_event(rec["google_event_id"])
-                logger.info(f"Calendar event deleted for recordatorio #{rec_id}")
-            except Exception as e:
-                logger.warning(f"Calendar delete failed for recordatorio #{rec_id}: {e}")
         await recordatorio_repo.delete(rec_id)
         return {"data_response": f"Recordatorio #{rec_id} eliminado."}
 
@@ -831,65 +818,19 @@ class ActionExecutor:
         rec_id = accion.get("recordatorio_id") or accion.get("id")
         if not rec_id:
             return {"data_response": "Necesito el ID del recordatorio para actualizarlo."}
-        rec = await recordatorio_repo.get_by_id(rec_id)
-        if not rec:
-            return {"data_response": f"No encontré el recordatorio #{rec_id}."}
-        updates = {}
-        for field in ("mensaje", "hora", "dias", "activo"):
-            if field in accion and accion[field] is not None:
-                updates[field] = accion[field]
-        if updates:
-            await recordatorio_repo.update(rec_id, **updates)
-        # Sync Calendar if content changed
-        google_svc = self.repos.get("google_service")
-        cal_note = ""
-        if google_svc and any(k in updates for k in ("mensaje", "hora", "dias")):
-            try:
-                old_event_id = rec.get("google_event_id")
-                if old_event_id:
-                    google_svc.delete_calendar_event(old_event_id)
-                new_msg = updates.get("mensaje", rec.get("mensaje", ""))
-                new_hora = updates.get("hora", rec.get("hora", "09:00"))
-                new_dias = updates.get("dias", rec.get("dias", "todos"))
-                new_event_id = google_svc.create_calendar_event(new_msg, new_hora, new_dias)
-                if new_event_id:
-                    await recordatorio_repo.update_google_event_id(rec_id, new_event_id)
-                    cal_note = " (Calendar sincronizado)"
-            except Exception as e:
-                logger.warning(f"Calendar sync failed for recordatorio #{rec_id} update: {e}")
-        return {"data_response": f"Recordatorio #{rec_id} actualizado{cal_note}."}
+        # Delete old and recreate (repo doesn't support update)
+        await recordatorio_repo.delete(rec_id)
+        mensaje = accion.get("mensaje", "")
+        hora = accion.get("hora", "09:00")
+        dias = accion.get("dias", "todos")
+        if mensaje:
+            new_id = await recordatorio_repo.save(mensaje=mensaje, hora=hora, dias=dias)
+            return {"data_response": f"Recordatorio actualizado (nuevo #{new_id})."}
+        return {"data_response": f"Recordatorio #{rec_id} eliminado."}
 
     async def _do_importar_calendario(self, accion: dict) -> dict:
-        google_svc = self.repos.get("google_service")
-        if not google_svc:
-            return {"data_response": "Google Calendar no está configurado."}
-        recordatorio_repo = self.repos.get("recordatorio")
-        if not recordatorio_repo:
-            return {"data_response": "Recordatorios no disponible."}
-        max_events = accion.get("max", 20)
-        events = google_svc.list_upcoming_events(max_results=max_events)
-        if not events:
-            return {"data_response": "No hay eventos próximos en Calendar."}
-        imported = 0
-        skipped = 0
-        for ev in events:
-            event_id = ev.get("event_id", "")
-            # Skip if already imported
-            existing = await recordatorio_repo.get_by_google_event_id(event_id)
-            if existing:
-                skipped += 1
-                continue
-            summary = ev.get("summary", "Evento sin título")
-            hora = ev.get("start", "09:00")
-            if "T" in hora:
-                hora = hora.split("T")[1][:5]
-            rec_id = await recordatorio_repo.save(
-                mensaje=summary, hora=hora, dias="todos",
-                google_event_id=event_id
-            )
-            imported += 1
-            logger.info(f"Imported calendar event '{summary}' as recordatorio #{rec_id}")
-        return {"data_response": f"Importados: {imported}, ya existían: {skipped}."}
+        # Calendar import now handled via MCP tools (get_events, etc.)
+        return {"data_response": "Usa las herramientas MCP de Calendar para gestionar eventos."}
 
     async def _resumen_hoy_detallado(self) -> str:
         mov_repo = self.repos["movimiento"]
