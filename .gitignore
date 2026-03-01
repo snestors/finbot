@@ -9,4 +9,6 @@ node_modules/
 data/finbot.db
 data/receipts/
 data/knowledge/*.md
+data/backups/
+data/google_token.json
 web_old/
