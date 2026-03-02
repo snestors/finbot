@@ -16,7 +16,8 @@ def _normalize(text: str) -> str:
 FINANCE = "finance"
 ANALYSIS = "analysis"
 ADMIN = "admin"
-CHAT = "chat"
+TRADING = "trading"
+GENERAL = "chat"  # renamed internally; wire value stays "chat" for compatibility
 
 FINANCE_PATTERNS = [
     # Money amounts
@@ -60,6 +61,9 @@ ANALYSIS_PATTERNS = [
     r'\b(?:recibo\s+(?:de\s+)?(?:luz|agua|gas))',
     r'\b(?:ahorro|ahorrar|eficien)',
     r'\b(?:como\s+va\w*\s+(?:la\s+|el\s+|lo\s+)?(?:luz|agua|gas|electri|consum))',
+    # 3D Printer
+    r'\b(?:impresora|printer|3d|elegoo|imprimi\w*|filamento|nozzle|cama|capa|layer)\b',
+    r'\b(?:como\s+va\w*\s+(?:la\s+)?impres)',
 ]
 
 ADMIN_PATTERNS = [
@@ -95,6 +99,42 @@ ADMIN_PATTERNS = [
     r'\b(?:edita|modifica|cambia).*(?:alma|personalidad|estilo)',
 ]
 
+TRADING_PATTERNS = [
+    r'\b(?:trading|bot\s+(?:de\s+)?trading|trades?|posicion(?:es)?)\b',
+    r'\b(?:long|short|leverage|apalancamiento)\b',
+    r'\b(?:bitget|futuros|perpetuos|swap)\b',
+    r'\b(?:pnl|profit|ganancia.*bot|perdida.*bot)\b',
+    r'\b(?:brain|darwin|estrategia.*bot)\b',
+    r'\b(?:btc|eth|xrp|sol|doge)(?:/usdt)?\b',
+    r'\b(?:pausa|resume|reactiva|detener?).*(?:bot|trading)\b',
+    r'\b(?:como\s+va\s+el\s+(?:trading|bot))\b',
+    r'\b(?:win\s*rate|trailing|stop\s*loss)\b',
+    r'\b(?:paper\s*mode|modo\s*papel)\b',
+]
+
+GENERAL_PATTERNS = [
+    # Opinions, advice, recommendations
+    r'\b(?:que\s+opinas|que\s+piensas|que\s+(?:me\s+)?recomiendas)',
+    r'\b(?:dame\s+(?:tu\s+)?opinion|tu\s+opinion)',
+    r'\b(?:ayudame\s+(?:a|con)|me\s+ayudas)',
+    r'\b(?:como\s+(?:hago|puedo|podria|deberia))',
+    r'\b(?:recomienda(?:me)?|sugier[ea](?:me)?)',
+
+    # Planning, ideas
+    r'\b(?:planifi(?:car|quemos)|planear|organiz(?:ar|ame))',
+    r'\b(?:ideas?\s+(?:para|de|sobre))',
+    r'\b(?:lluvia\s+de\s+ideas|brainstorm)',
+
+    # General questions
+    r'\b(?:explicame|cuentame|dime\s+(?:sobre|de|que))',
+    r'\b(?:que\s+(?:es|son|significa)|como\s+funciona)',
+    r'\b(?:por\s*que\s+(?:es|se|hay))',
+
+    # Comparisons, decisions
+    r'\b(?:que\s+es\s+mejor|cual\s+(?:es\s+mejor|prefieres|elijo))',
+    r'\b(?:ventajas?\s+(?:y|o)\s+desventajas?|pros?\s+(?:y|o)\s+contras?)',
+]
+
 
 class MessageRouter:
     """Routes messages to the appropriate agent with zero API calls for ~85% of messages."""
@@ -104,6 +144,8 @@ class MessageRouter:
         self._finance_re = [re.compile(p, re.IGNORECASE) for p in FINANCE_PATTERNS]
         self._analysis_re = [re.compile(p, re.IGNORECASE) for p in ANALYSIS_PATTERNS]
         self._admin_re = [re.compile(p, re.IGNORECASE) for p in ADMIN_PATTERNS]
+        self._trading_re = [re.compile(p, re.IGNORECASE) for p in TRADING_PATTERNS]
+        self._general_re = [re.compile(p, re.IGNORECASE) for p in GENERAL_PATTERNS]
 
     # Hard priority: these words ALWAYS route to a specific agent, no scoring
     _PRIORITY_ADMIN = re.compile(r'\b(?:recuerdame|avisame|no\s+me\s+dejes\s+olvidar)\b', re.IGNORECASE)
@@ -113,7 +155,7 @@ class MessageRouter:
         text_clean = text.strip()
 
         if len(text_clean) < 2:
-            return CHAT
+            return GENERAL
 
         # Priority overrides — skip scoring entirely
         if self._PRIORITY_ADMIN.search(text):
@@ -124,6 +166,8 @@ class MessageRouter:
             FINANCE: self._score(text, self._finance_re),
             ANALYSIS: self._score(text, self._analysis_re),
             ADMIN: self._score(text, self._admin_re),
+            TRADING: self._score(text, self._trading_re),
+            GENERAL: self._score(text, self._general_re),
         }
 
         # Context boosting from recent history
@@ -156,7 +200,7 @@ class MessageRouter:
             return result
 
         logger.debug(f"Router: '{text_clean[:40]}' → chat (default)")
-        return CHAT
+        return GENERAL
 
     def _score(self, text: str, patterns: list[re.Pattern]) -> int:
         return sum(1 for p in patterns if p.search(text))
@@ -174,14 +218,20 @@ class MessageRouter:
 
         if len(text) < 20:
             finance_words = ['gasto', 'registr', 'monto', 'pago', 'cuenta', 's/', 'tarjeta', 'cuota', 'credito', 'banco', 'digito']
-            analysis_words = ['presupuesto', 'resumen', 'total', 'cuanto', 'limite mensual', 'kwh', 'consumo', 'categoria']
+            analysis_words = ['presupuesto', 'resumen', 'total', 'cuanto', 'limite mensual', 'kwh', 'consumo', 'categoria', 'impresora', 'printer', 'elegoo', 'capa', 'nozzle']
             admin_words = ['memoria', 'perfil', 'codigo', 'agente', 'calendario', 'calendar', 'gmail', 'drive']
+            trading_words = ['trading', 'bot', 'posicion', 'pnl', 'darwin', 'leverage', 'long', 'short', 'trailing', 'signal']
+            general_words = ['opinas', 'recomiend', 'ayud', 'planific', 'idea', 'consejo', 'explica']
             if any(w in lb for w in finance_words):
                 boosted[FINANCE] += 2
             if any(w in lb for w in analysis_words):
                 boosted[ANALYSIS] += 2
             if any(w in lb for w in admin_words):
                 boosted[ADMIN] += 2
+            if any(w in lb for w in trading_words):
+                boosted[TRADING] += 2
+            if any(w in lb for w in general_words):
+                boosted[GENERAL] += 2
         return boosted
 
     async def _llm_classify(self, text: str, history: list[dict] = None) -> str:
@@ -192,11 +242,12 @@ class MessageRouter:
                 role = "U" if msg.get("role") == "user" else "B"
                 recent += f"{role}: {msg.get('content', '')[:100]}\n"
 
-        prompt = f"""Clasifica en UNA categoria: finance, analysis, admin, chat
+        prompt = f"""Clasifica en UNA categoria: finance, analysis, admin, trading, general
 - finance: gastos, ingresos, pagos, cuentas, tarjetas, deudas
-- analysis: consultas, resumenes, presupuestos, tipo de cambio, energía
+- analysis: consultas de datos, resumenes, presupuestos, tipo de cambio, energía
 - admin: recordatorios, memoria, código, sistema, herramientas
-- chat: conversación casual, saludos, no financiero
+- trading: bot de trading, crypto, posiciones, PnL, leverage, darwin, señales, futuros
+- general: conversación casual, preguntas generales, opiniones, consejos, ideas, planificación, cualquier tema no financiero/admin
 
 {f"Contexto reciente:\\n{recent}" if recent else ""}
 Mensaje: "{text}"
@@ -208,9 +259,11 @@ Responde SOLO la categoria:"""
                 user_message=prompt,
             )
             category = response.text.strip().lower().split()[0]
-            if category in (FINANCE, ANALYSIS, ADMIN, CHAT):
+            if category == "general":
+                category = GENERAL
+            if category in (FINANCE, ANALYSIS, ADMIN, TRADING, GENERAL):
                 return category
         except Exception as e:
             logger.warning(f"Router LLM fallback failed: {e}")
 
-        return CHAT
+        return GENERAL

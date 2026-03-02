@@ -38,16 +38,28 @@ class LLMClient:
             logger.info("[llm] Gemini client ready (fallback)")
 
     async def generate(self, system: str, user_message: str,
-                       history: list[dict] | None = None) -> LLMResponse:
-        """Generate response. Claude first with retries, Gemini fallback."""
+                       history: list[dict] | None = None,
+                       model: str | None = None) -> LLMResponse:
+        """Generate response. Claude first with retries, Gemini fallback.
+
+        Args:
+            model: Override the default Claude model (e.g. "claude-opus-4-6").
+                   When a specific model is requested, Gemini fallback is
+                   disabled — the call either succeeds on Claude or raises.
+        """
+        strict = model is not None  # No Gemini fallback when model forced
+
         if self._claude:
             # Retry Claude up to 3 times on rate limit (wait 5s, 10s, 15s)
             for attempt in range(3):
                 try:
-                    text = await self._call_claude(system, user_message, history)
-                    return LLMResponse(text=text, model="sonnet")
+                    text = await self._call_claude(system, user_message, history, model=model)
+                    model_label = model or self._claude_model
+                    return LLMResponse(text=text, model=model_label)
                 except anthropic.AuthenticationError as e:
-                    logger.warning(f"[llm] Claude AuthError: {e} -> Gemini fallback")
+                    logger.warning(f"[llm] Claude AuthError: {e}")
+                    if strict:
+                        raise
                     break  # No point retrying auth errors
                 except anthropic.RateLimitError as e:
                     wait = 5 * (attempt + 1)
@@ -55,22 +67,27 @@ class LLMClient:
                         logger.info(f"[llm] Claude 429, retrying in {wait}s (attempt {attempt + 1}/3)")
                         await asyncio.sleep(wait)
                     else:
-                        logger.warning(f"[llm] Claude 429 after 3 attempts -> Gemini fallback")
+                        logger.warning(f"[llm] Claude 429 after 3 attempts")
+                        if strict:
+                            raise
                 except anthropic.APIError as e:
-                    logger.error(f"[llm] Claude APIError: {e} -> Gemini fallback")
+                    logger.error(f"[llm] Claude APIError: {e}")
+                    if strict:
+                        raise
                     break
 
-        if self._gemini:
+        if not strict and self._gemini:
             text = await self._call_gemini(system, user_message, history)
             return LLMResponse(text=text, model="gemini")
 
         raise RuntimeError("No LLM client available (Claude + Gemini both failed)")
 
     async def _call_claude(self, system: str, user_message: str,
-                           history: list[dict] | None) -> str:
+                           history: list[dict] | None,
+                           model: str | None = None) -> str:
         messages = self._build_claude_messages(user_message, history)
         response = await self._claude.messages.create(
-            model=self._claude_model,
+            model=model or self._claude_model,
             max_tokens=16384,
             system=system,
             messages=messages,

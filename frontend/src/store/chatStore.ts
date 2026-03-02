@@ -24,6 +24,16 @@ export interface SystemStats {
   current_a?: number | null;
   day_kwh?: number | null;
   month_kwh?: number | null;
+  wifi_dbm?: number | null;
+  printer?: {
+    status: string;
+    progress: number;
+    current_layer: number;
+    total_layers: number;
+    filename: string;
+    eta_min: number;
+    [key: string]: any;
+  } | null;
 }
 
 export interface ActivityStep {

@@ -15,6 +15,7 @@ import Consumos from './pages/Consumos';
 import Analytics from './pages/Analytics';
 import GastosFijos from './pages/GastosFijos';
 import Logs from './pages/Logs';
+import Trading from './pages/Trading';
 import Login from './pages/Login';
 
 const queryClient = new QueryClient({
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/tipo-cambio" element={<TipoCambio />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/gastos-fijos" element={<GastosFijos />} />
+            <Route path="/trading" element={<Trading />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/config" element={<Config />} />
           </Route>

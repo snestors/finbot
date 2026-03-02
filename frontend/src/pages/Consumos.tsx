@@ -11,6 +11,28 @@ const now = new Date();
 const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 const todayStr = now.toISOString().slice(0, 10);
 
+/** Billing cycle: 7th to 7th. If today < 7, we're in last month's cycle. */
+function getBillingCycle(ref: Date = new Date()): { desde: string; hasta: string } {
+  const y = ref.getFullYear();
+  const m = ref.getMonth(); // 0-indexed
+  if (ref.getDate() < 7) {
+    // Still in previous cycle: (prev month 7) → (this month 7)
+    const prev = m === 0 ? new Date(y - 1, 11, 7) : new Date(y, m - 1, 7);
+    const end = new Date(y, m, 7);
+    return {
+      desde: `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-07`,
+      hasta: `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-07`,
+    };
+  }
+  // Past the 7th: (this month 7) → (next month 7)
+  const start = new Date(y, m, 7);
+  const next = m === 11 ? new Date(y + 1, 0, 7) : new Date(y, m + 1, 7);
+  return {
+    desde: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-07`,
+    hasta: `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-07`,
+  };
+}
+
 const TABS = [
   { key: 'luz', label: 'Luz', icon: '⚡' },
   { key: 'agua', label: 'Agua', icon: '💧' },
@@ -153,15 +175,9 @@ function LuzEnVivo({ mes: _mes, queryClient: _qc }: { mes: string; queryClient: 
 
 /* ─── Grafico ─── */
 function LuzGrafico() {
-  const [desde, setDesde] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
-  });
-  const [hasta, setHasta] = useState(() => {
-    const d = new Date();
-    d.setMonth(d.getMonth() + 1);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
-  });
+  const cycle = useMemo(() => getBillingCycle(), []);
+  const [desde, setDesde] = useState(cycle.desde);
+  const [hasta, setHasta] = useState(cycle.hasta);
   const [slice, setSlice] = useState(1);
 
   const { data: chartData, isLoading } = useQuery({
@@ -179,18 +195,28 @@ function LuzGrafico() {
 
   const formatted = useMemo(() => {
     if (!chartData) return [];
-    let acumKwh = 0;
+    // day_kwh is an intra-day running total (resets each day).
+    // To accumulate across days: sum MAX(day_kwh) of each completed day + current day's value.
+    let prevDay = '';
+    let prevDayMax = 0;
+    let acumPrevDays = 0;
     return chartData.map((d: any) => {
       const kwh = d.day_kwh != null ? d.day_kwh : 0;
-      acumKwh += slice >= 24 ? kwh : 0;
-      const costoAcum = slice >= 24 ? Math.round(acumKwh * costoKwh * 100) / 100 : null;
-      const costoPoint = kwh > 0 ? Math.round(kwh * costoKwh * 100) / 100 : null;
+      const day = d.fecha?.slice(0, 10) ?? '';
+      if (day !== prevDay && prevDay !== '') {
+        acumPrevDays += prevDayMax;
+        prevDayMax = 0;
+      }
+      prevDay = day;
+      if (kwh > prevDayMax) prevDayMax = kwh;
+      const acumKwh = acumPrevDays + kwh;
+      const costoAcum = Math.round(acumKwh * costoKwh * 100) / 100;
       return {
         ...d,
         label: d.fecha?.slice(5, 16)?.replace('T', ' ') ?? '',
         power_w: d.power_w != null ? Math.round(d.power_w * 10) / 10 : null,
         current_a: d.current_a != null ? Math.round(d.current_a * 100) / 100 : null,
-        costo: slice >= 24 ? costoAcum : costoPoint,
+        costo: costoAcum,
       };
     });
   }, [chartData, costoKwh, slice]);
@@ -417,16 +443,10 @@ function LuzConfig() {
 
   const currentCosto = costoKwh || loaded || '0.75';
 
-  // Ciclo de facturacion: 7 del mes actual → 7 del mes siguiente
-  const cicloDesde = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
-  }, []);
-  const cicloHasta = useMemo(() => {
-    const d = new Date();
-    d.setMonth(d.getMonth() + 1);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-07`;
-  }, []);
+  // Ciclo de facturacion: 7 al 7 (calculado segun dia actual)
+  const cycle = useMemo(() => getBillingCycle(), []);
+  const cicloDesde = cycle.desde;
+  const cicloHasta = cycle.hasta;
 
   const { data: periodoData } = useQuery({
     queryKey: ['consumos-periodo', cicloDesde, cicloHasta],
@@ -462,10 +482,12 @@ function LuzConfig() {
       </Card>
 
       <Card>
-        <h3 className="text-sm font-semibold mb-3">Estimado del Mes</h3>
+        <h3 className="text-sm font-semibold mb-3">
+          Estimado del Ciclo ({cicloDesde.slice(5)} a {cicloHasta.slice(5)})
+        </h3>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <div>
-            <p className="text-xs text-slate-400">kWh acumulado (mes)</p>
+            <p className="text-xs text-slate-400">kWh acumulado (ciclo)</p>
             <p className="text-lg font-bold font-mono">{monthKwh.toFixed(2)}</p>
           </div>
           <div>

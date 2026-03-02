@@ -325,6 +325,14 @@ async def build_analysis_context(repos: dict) -> str:
     except Exception:
         pass
 
+    # 3D Printer context
+    try:
+        printer = build_printer_context(repos)
+        if printer:
+            parts.append(printer)
+    except Exception:
+        pass
+
     return "\n".join(parts)
 
 
@@ -378,6 +386,77 @@ async def build_admin_context(repos: dict, registry_info: list[dict] = None,
         parts.append(mcp_tools)
 
     return "\n".join(parts)
+
+
+def build_trading_context(trading_bot) -> str:
+    """Context for TradingAgent: bot state, position, stats, recent trades."""
+    if not trading_bot:
+        return "Bot de trading no configurado."
+    try:
+        trading_bot._ensure_loaded()
+        parts = []
+
+        state = trading_bot.state.summary()
+        mode = "PAPER" if state.get("paper_mode") else "REAL"
+        paused = " PAUSADO" if state.get("paused") else " ACTIVO"
+        parts.append(f"Bot: {mode}{paused}")
+
+        if state.get("has_position"):
+            pos = state["position"]
+            parts.append(
+                f"Posicion abierta: {pos['side'].upper()} {pos['pair']} "
+                f"@ {pos['entry_price']:.4f} "
+                f"SL={pos.get('sl', 0):.4f} TP={pos.get('tp', 0):.4f} "
+                f"strategy={pos.get('strategy')} score={pos.get('score')}"
+            )
+        else:
+            parts.append("Sin posicion abierta")
+
+        brain = trading_bot.brain.summary()
+        parts.append(
+            f"Brain: {brain['total_trades']} trades, WR={brain['win_rate']}%, "
+            f"PnL=${brain['total_pnl']:.4f}, streak={brain['streak']}"
+        )
+        if brain.get("killed_pairs"):
+            parts.append(f"Pares KILLED: {', '.join(brain['killed_pairs'])}")
+        if brain.get("killed_strategies"):
+            parts.append(f"Estrategias KILLED: {', '.join(brain['killed_strategies'])}")
+
+        params = brain.get("params", {})
+        parts.append(
+            f"Params: leverage={params.get('leverage_default')}x "
+            f"SL={params.get('sl_atr_mult')}xATR TP={params.get('tp_atr_mult')}xATR "
+            f"min_score={params.get('min_score')}"
+        )
+
+        recent = trading_bot.journal.get_recent(5)
+        if recent:
+            trade_lines = []
+            for t in recent:
+                pnl = t.get("pnl", 0)
+                result = "WIN" if pnl > 0 else "LOSS"
+                trade_lines.append(
+                    f"  [{result}] {t.get('pair')} {t.get('side')} "
+                    f"PnL=${pnl:.4f} {t.get('reason')} "
+                    f"hold={t.get('hold_seconds', 0)}s"
+                )
+            parts.append("Ultimos trades:\n" + "\n".join(trade_lines))
+
+        balance = trading_bot.exchange.fetch_balance()
+        parts.append(f"Balance: ${balance:.2f}")
+
+        return "\n".join(parts)
+    except Exception as e:
+        logger.warning(f"build_trading_context error: {e}")
+        return f"Error leyendo estado del bot: {e}"
+
+
+def build_printer_context(repos: dict) -> str:
+    """Context for 3D printer status (sync — reads from in-memory latest)."""
+    printer = repos.get("printer_service")
+    if not printer or not printer.latest:
+        return ""
+    return printer.get_summary()
 
 
 async def build_chat_context(repos: dict) -> str:

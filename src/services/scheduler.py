@@ -14,7 +14,9 @@ class SchedulerService:
                  timezone: str = "America/Lima",
                  movimiento_repo=None, tarjeta_periodo_repo=None,
                  sonoff_service=None, consumo_repo=None,
-                 mcp_manager=None):
+                 mcp_manager=None,
+                 trading_bot=None,
+                 llm_client=None):
         self.scheduler = AsyncIOScheduler(timezone=timezone)
         self.bus = message_bus
         self.gasto_repo = gasto_repo
@@ -30,6 +32,8 @@ class SchedulerService:
         self.sonoff_service = sonoff_service
         self.consumo_repo = consumo_repo
         self.mcp_manager = mcp_manager
+        self.trading_bot = trading_bot
+        self.llm_client = llm_client
 
     async def _get_user_name(self) -> str:
         if self.perfil_repo:
@@ -146,6 +150,7 @@ class SchedulerService:
                 minute="*",
                 id="check_calendar_events",
             )
+        self._calendar_events_notified = set()  # track already-notified event IDs
 
         # Sonoff 5-minute reading save
         if self.sonoff_service and self.consumo_repo:
@@ -164,6 +169,21 @@ class SchedulerService:
                 hour=0,
                 minute=30,
                 id="facturar_periodos",
+            )
+
+        # Trading bot — run every minute + Darwin every hour
+        if self.trading_bot:
+            self.scheduler.add_job(
+                self._trading_cycle,
+                "interval",
+                minutes=1,
+                id="trading_cycle",
+            )
+            self.scheduler.add_job(
+                self._trading_darwin,
+                "cron",
+                minute=0,
+                id="trading_darwin",
             )
 
         self.scheduler.start()
@@ -304,39 +324,44 @@ class SchedulerService:
         try:
             from datetime import datetime, timedelta
             from zoneinfo import ZoneInfo
+            import re
+
             now = datetime.now(ZoneInfo(self.scheduler.timezone.key))
-            time_min = now.isoformat()
-            time_max = (now + timedelta(minutes=2)).isoformat()
+            time_min = now.replace(second=0, microsecond=0).isoformat()
+            time_max = (now.replace(second=0, microsecond=0) + timedelta(minutes=1)).isoformat()
 
             result = await self.mcp_manager.call_tool("get_events", {
                 "user_google_email": "snestors@gmail.com",
                 "time_min": time_min,
                 "time_max": time_max,
             })
-            if not result:
+            if not result or "no events found" in str(result).lower():
                 return
 
-            # Parse events from result (may be string or list)
-            import json as _json
-            events = result if isinstance(result, list) else []
-            if isinstance(result, str):
-                # "No events found..." or empty → nothing to notify
-                if not result.strip() or "no events found" in result.lower():
-                    return
-                try:
-                    events = _json.loads(result)
-                except (ValueError, TypeError):
-                    # Non-JSON, non-empty, not "no events" → probably a real notification
-                    nombre = await self._get_user_name()
-                    prefix = f"{nombre}, " if nombre else ""
-                    await self.bus.send_proactive(f"{prefix}recordatorio: {result}")
-                    return
+            result_str = str(result)
 
-            for event in events:
-                summary = event.get("summary", "Evento sin titulo")
-                nombre = await self._get_user_name()
-                prefix = f"{nombre}, " if nombre else ""
+            # Extract event IDs and summaries from MCP text response
+            # Format: "Event Name" (Starts: ...) ID: abc123 | Link: ...
+            event_ids = re.findall(r'ID:\s*(\S+)', result_str)
+            summaries = re.findall(r'["\u201c]([^"\u201d]+)["\u201d]\s*\(Starts:', result_str)
+
+            if not event_ids:
+                return
+
+            nombre = await self._get_user_name()
+            prefix = f"{nombre}, " if nombre else ""
+
+            for i, eid in enumerate(event_ids):
+                eid = eid.rstrip('|').strip()
+                if eid in self._calendar_events_notified:
+                    continue
+                self._calendar_events_notified.add(eid)
+                summary = summaries[i] if i < len(summaries) else "Evento de calendario"
                 await self.bus.send_proactive(f"{prefix}recordatorio: {summary}")
+
+            # Purge set if it grows too large (events from past days)
+            if len(self._calendar_events_notified) > 200:
+                self._calendar_events_notified.clear()
 
         except Exception as e:
             logger.error(f"Error checking calendar events: {e}")
@@ -430,6 +455,90 @@ class SchedulerService:
                 )
         except Exception as e:
             logger.error(f"Error saving Sonoff reading: {e}")
+
+    # --- Trading bot cycle (every minute) ---
+    async def _trading_cycle(self):
+        if not self.trading_bot:
+            return
+        try:
+            result = await self.trading_bot.run_with_sentinel(llm=self.llm_client)
+            action = result.get("action", "")
+            mode = "PAPER" if self.trading_bot.exchange.paper_mode else "REAL"
+
+            # Proactive alerts for opens/closes
+            if action == "opened":
+                pair = result.get("pair", "?")
+                side = result.get("side", "?").upper()
+                price = result.get("price", 0)
+                strategy = result.get("strategy", "?")
+                score = result.get("score", 0)
+                await self.bus.send_proactive(
+                    f"[Trading {mode}] {side} {pair} @ {price:.4f} "
+                    f"(score={score}, {strategy})"
+                )
+
+            elif action == "closed":
+                trade = result.get("trade", {})
+                pair = trade.get("pair", "?")
+                pnl = trade.get("pnl", 0)
+                reason = trade.get("reason", "?")
+                emoji = "+" if pnl > 0 else ""
+                await self.bus.send_proactive(
+                    f"[Trading {mode}] Cerrado {pair}: {emoji}${pnl:.4f} ({reason})"
+                )
+
+            # Sentinel alerts
+            elif action == "sentinel_tighten":
+                pair = result.get("pair", "?")
+                old_sl = result.get("old_sl", 0)
+                new_sl = result.get("new_sl", 0)
+                reason = result.get("reason", "")
+                await self.bus.send_proactive(
+                    f"[Sentinel {mode}] TIGHTEN {pair}: SL {old_sl:.6f} → {new_sl:.6f}\n{reason}"
+                )
+
+            elif action == "sentinel_close":
+                # Already handled by "closed" above (reason=sentinel_close)
+                pass
+
+            elif action == "sentinel_let_run":
+                pair = result.get("pair", "?")
+                trigger = result.get("new_trailing_trigger", 0)
+                reason = result.get("reason", "")
+                await self.bus.send_proactive(
+                    f"[Sentinel {mode}] LET_RUN {pair}: trailing trigger → {trigger:.2f}%\n{reason}"
+                )
+
+            elif action == "pretrade_blocked":
+                pair = result.get("pair", "?")
+                direction = result.get("direction", "?")
+                score = result.get("score", 0)
+                reason = result.get("reason", "")
+                await self.bus.send_proactive(
+                    f"[Pre-trade {mode}] BLOCKED {direction} {pair} (score={score})\n{reason}"
+                )
+
+        except Exception as e:
+            logger.error(f"Trading cycle error: {e}", exc_info=True)
+
+    # --- Darwin evolution (every hour) ---
+    async def _trading_darwin(self):
+        if not self.trading_bot:
+            return
+        try:
+            from trading.darwin import darwin_cycle
+            self.trading_bot._ensure_loaded()
+            changes = await darwin_cycle(
+                self.trading_bot.brain,
+                self.trading_bot.journal,
+                llm=self.llm_client,
+                context=self.trading_bot.context,
+            )
+            if changes:
+                msg = "[Darwin Opus]\n" + "\n".join(f"• {c}" for c in changes)
+                await self.bus.send_proactive(msg)
+        except Exception as e:
+            logger.error(f"Darwin cycle error: {e}", exc_info=True)
 
     def stop(self):
         self.scheduler.shutdown()

@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
 
+    # Bitget (trading bot)
+    bitget_api_key: str = ""
+    bitget_secret: str = ""
+    bitget_passphrase: str = ""
+
     # RPi optimizations
     uvicorn_workers: int = 1
     max_chat_history_cache: int = 100

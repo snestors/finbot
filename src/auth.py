@@ -1,6 +1,9 @@
+import json
 import secrets
 import logging
+import time
 import bcrypt
+from pathlib import Path
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -9,13 +12,41 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# In-memory sessions: {token: True}
-_sessions: dict[str, bool] = {}
+# Persistent sessions file
+_SESSIONS_FILE = Path("data/sessions.json")
+_sessions: dict[str, float] = {}  # {token: created_timestamp}
+_MAX_AGE = 86400 * 30  # 30 days
 
 PUBLIC_PATHS = {
     "/api/login", "/api/health", "/webhook/whatsapp", "/favicon.ico",
 }
 PUBLIC_PREFIXES = ("/api/login", "/assets/")
+
+
+def _load_sessions():
+    """Load sessions from disk."""
+    global _sessions
+    if _SESSIONS_FILE.exists():
+        try:
+            data = json.loads(_SESSIONS_FILE.read_text())
+            now = time.time()
+            # Only keep non-expired sessions
+            _sessions = {k: v for k, v in data.items()
+                         if now - v < _MAX_AGE}
+            return
+        except Exception as e:
+            logger.error(f"Failed to load sessions: {e}")
+    _sessions = {}
+
+
+def _save_sessions():
+    """Persist sessions to disk."""
+    _SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SESSIONS_FILE.write_text(json.dumps(_sessions))
+
+
+# Load on import
+_load_sessions()
 
 
 def is_public(path: str) -> bool:
@@ -42,12 +73,20 @@ def verify_pin(pin: str) -> bool:
 
 def create_session() -> str:
     token = secrets.token_urlsafe(32)
-    _sessions[token] = True
+    _sessions[token] = time.time()
+    _save_sessions()
     return token
 
 
 def is_valid_session(token: str) -> bool:
-    return token in _sessions
+    created = _sessions.get(token)
+    if created is None:
+        return False
+    if time.time() - created > _MAX_AGE:
+        _sessions.pop(token, None)
+        _save_sessions()
+        return False
+    return True
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

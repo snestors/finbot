@@ -1,31 +1,21 @@
 """
 MCP-style tools for FinBot agent.
-Full system access with auto-recovery via git checkpoints.
+Full system access with Python syntax validation.
 """
 import os
 import py_compile
 import subprocess
 import logging
-import shutil
 import tempfile
 from pathlib import Path
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
-BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
 
 # Paths that should NEVER be touched
 FORBIDDEN_PATHS = {"/etc/shadow", "/etc/passwd", "/boot/firmware/config.txt"}
 FORBIDDEN_PREFIXES = ["/proc", "/sys/firmware"]
-
-# Core files — editable but with extra safety (checkpoint + preflight)
-CORE_FILES = {
-    "src/main.py", "src/bot/processor.py", "src/bus/message_bus.py",
-    "src/database/db.py", "src/agent/tools.py", "src/agent/plugin_manager.py",
-    "src/agents/action_executor.py", "src/agents/base_agent.py",
-}
 
 
 def _is_forbidden(filepath: str) -> bool:
@@ -34,17 +24,6 @@ def _is_forbidden(filepath: str) -> bool:
     if p in FORBIDDEN_PATHS:
         return True
     return any(p.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
-
-
-def _is_core_file(path: str) -> bool:
-    """Check if a path points to a protected core file."""
-    # Normalize to relative path
-    try:
-        p = Path(path).resolve()
-        rel = str(p.relative_to(PROJECT_ROOT))
-    except (ValueError, RuntimeError):
-        return False
-    return rel in CORE_FILES
 
 
 def _check_python_syntax(content: str) -> str | None:
@@ -64,51 +43,6 @@ def _check_python_syntax(content: str) -> str | None:
         return str(e)
 
 
-def _preflight_check() -> str | None:
-    """Try to import core modules to verify nothing is broken. Returns error or None if OK."""
-    try:
-        # Import the key modules that would break on syntax/import errors
-        check_script = (
-            "import sys; sys.path.insert(0, '.'); "
-            "from src.bot.processor import Processor; "
-            "from src.bus.message_bus import MessageBus; "
-            "from src.agents.action_executor import ActionExecutor; "
-            "from src.agents.base_agent import BaseAgent; "
-            "import src.database.db; "
-            "from src.agent.tools import AgentTools; "
-            "from src.agent.plugin_manager import PluginManager; "
-            "print('OK')"
-        )
-        result = subprocess.run(
-            [str(PROJECT_ROOT / "venv" / "bin" / "python3"), "-c", check_script],
-            capture_output=True, text=True, timeout=15,
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode == 0 and "OK" in result.stdout:
-            return None
-        error = (result.stderr + result.stdout).strip()
-        return error[-500:] if len(error) > 500 else error
-    except subprocess.TimeoutExpired:
-        return "Preflight timed out"
-    except Exception as e:
-        return str(e)
-
-
-def _git_checkpoint(message: str) -> str | None:
-    """Log a checkpoint marker. Does NOT auto-commit or revert — that caused data loss."""
-    try:
-        hash_result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=5,
-        )
-        commit_hash = hash_result.stdout.strip()
-        logger.info(f"Git checkpoint noted: {commit_hash} — {message}")
-        return commit_hash
-    except Exception as e:
-        logger.warning(f"Git checkpoint failed: {e}")
-        return None
-
-
 class AgentTools:
     """Tools the agent can invoke. Full RPi access with safety rails."""
 
@@ -117,17 +51,15 @@ class AgentTools:
         return [
             {"name": "read_file", "description": "Read any file on the system. Absolute or relative path.",
              "parameters": {"path": "string"}},
-            {"name": "write_file", "description": "Write/overwrite a file. Auto-backup + Python syntax validation.",
+            {"name": "write_file", "description": "Write/overwrite a file. Python syntax validation.",
              "parameters": {"path": "string", "content": "string"}},
-            {"name": "edit_file", "description": "Replace text in a file. Auto-backup + Python syntax validation.",
+            {"name": "edit_file", "description": "Replace text in a file. Python syntax validation.",
              "parameters": {"path": "string", "old_text": "string", "new_text": "string"}},
             {"name": "list_files", "description": "List files in any directory.",
              "parameters": {"path": "string"}},
             {"name": "run_command", "description": "Run any shell command on the RPi.",
              "parameters": {"command": "string"}},
-            {"name": "restart_service", "description": "Create git checkpoint + restart FinBot safely.",
-             "parameters": {}},
-            {"name": "rollback", "description": "Rollback to last git checkpoint and restart.",
+            {"name": "restart_service", "description": "Restart FinBot service.",
              "parameters": {}},
             {"name": "rpi_status", "description": "Get RPi system status (temp, RAM, disk, uptime, services).",
              "parameters": {}},
@@ -137,7 +69,6 @@ class AgentTools:
 
     @staticmethod
     def read_file(path: str) -> str:
-        # Support both absolute and relative paths
         filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
         if _is_forbidden(str(filepath)):
             return f"Error: Path '{path}' is forbidden"
@@ -158,35 +89,13 @@ class AgentTools:
         filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
         if _is_forbidden(str(filepath)):
             return f"Error: Path '{path}' is forbidden"
-        is_core = _is_core_file(path)
         try:
-            # Validate Python syntax before writing
             if filepath.suffix == '.py':
                 syntax_err = _check_python_syntax(content)
                 if syntax_err:
                     return f"Error: Syntax error — NOT written. Fix: {syntax_err}"
-            # Git checkpoint before core file edits
-            if is_core:
-                _git_checkpoint(f"before editing core: {path}")
-            # Backup existing file
-            backup_path = None
-            if filepath.exists():
-                BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_name = f"{filepath.stem}_{ts}{filepath.suffix}"
-                backup_path = BACKUP_DIR / backup_name
-                shutil.copy2(filepath, backup_path)
             filepath.parent.mkdir(parents=True, exist_ok=True)
             filepath.write_text(content, encoding="utf-8")
-            # Preflight check for core files
-            if is_core:
-                preflight_err = _preflight_check()
-                if preflight_err:
-                    # Restore backup — the edit broke something
-                    if backup_path and backup_path.exists():
-                        shutil.copy2(backup_path, filepath)
-                    return f"Error: Core edit broke the app — REVERTED. Preflight: {preflight_err}"
-                return f"OK: Core file '{path}' written ({len(content)} chars) — preflight passed"
             return f"OK: '{path}' written ({len(content)} chars)"
         except Exception as e:
             return f"Error writing file: {e}"
@@ -198,35 +107,16 @@ class AgentTools:
             return f"Error: Path '{path}' is forbidden"
         if not filepath.exists():
             return f"Error: File '{path}' not found"
-        is_core = _is_core_file(path)
         try:
             content = filepath.read_text(encoding="utf-8")
             if old_text not in content:
                 return f"Error: old_text not found in '{path}'. Check exact whitespace/indentation."
             new_content = content.replace(old_text, new_text, 1)
-            # Validate Python syntax
             if filepath.suffix == '.py':
                 syntax_err = _check_python_syntax(new_content)
                 if syntax_err:
                     return f"Error: Edit would break syntax — NOT saved. Fix: {syntax_err}"
-            # Git checkpoint before core file edits
-            if is_core:
-                _git_checkpoint(f"before editing core: {path}")
-            # Backup
-            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"{filepath.stem}_{ts}{filepath.suffix}"
-            backup_path = BACKUP_DIR / backup_name
-            shutil.copy2(filepath, backup_path)
             filepath.write_text(new_content, encoding="utf-8")
-            # Preflight check for core files
-            if is_core:
-                preflight_err = _preflight_check()
-                if preflight_err:
-                    # Restore backup — the edit broke something
-                    shutil.copy2(backup_path, filepath)
-                    return f"Error: Core edit broke the app — REVERTED. Preflight: {preflight_err}"
-                return f"OK: Core file '{path}' edited — preflight passed"
             return f"OK: Edited '{path}'"
         except Exception as e:
             return f"Error editing: {e}"
@@ -255,7 +145,6 @@ class AgentTools:
         """Run any shell command. No restrictions — the agent is trusted."""
         if not command.strip():
             return "Error: Empty command"
-        # Safety: block only truly destructive patterns
         dangerous = ["rm -rf /", "mkfs", "dd if=", "> /dev/sd", ":(){ :|:& };:"]
         for d in dangerous:
             if d in command:
@@ -276,39 +165,17 @@ class AgentTools:
 
     @staticmethod
     def restart_service() -> str:
-        """Preflight check + git checkpoint + restart."""
-        # Preflight — refuse to restart if the app won't start
-        preflight_err = _preflight_check()
-        if preflight_err:
-            return f"Error: Preflight FAILED — NOT restarting. Fix first: {preflight_err}"
-        checkpoint = _git_checkpoint("before restart")
-        cp_msg = f" (checkpoint: {checkpoint})" if checkpoint else ""
+        """Restart FinBot service."""
         try:
             result = subprocess.run(
                 ["sudo", "systemctl", "restart", "finbot"],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                return f"OK: FinBot restarting...{cp_msg}"
-            return f"Restart failed: {result.stderr}{cp_msg}"
+                return "OK: FinBot restarting..."
+            return f"Restart failed: {result.stderr}"
         except Exception as e:
-            return f"Error restarting: {e}{cp_msg}"
-
-    @staticmethod
-    def rollback() -> str:
-        """Show recent commits for manual rollback. Does NOT auto-revert — that caused data loss."""
-        try:
-            log = subprocess.run(
-                ["git", "log", "--oneline", "-10"],
-                cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=10,
-            )
-            commits = log.stdout.strip()
-            return (
-                f"Auto-rollback disabled (caused data loss). Recent commits:\n{commits}\n\n"
-                "To rollback manually: git checkout <hash> -- <file>"
-            )
-        except Exception as e:
-            return f"Error: {e}"
+            return f"Error restarting: {e}"
 
     @staticmethod
     def rpi_status() -> str:
@@ -353,7 +220,7 @@ class AgentTools:
                 return f"OK: {name} installed via {manager}"
             return f"Error installing {name}: {output[-500:]}"
         except subprocess.TimeoutExpired:
-            return f"Error: Install timed out"
+            return "Error: Install timed out"
         except Exception as e:
             return f"Error: {e}"
 
@@ -366,7 +233,6 @@ class AgentTools:
             "list_files": lambda p: self.list_files(p.get("path", "")),
             "run_command": lambda p: self.run_command(p.get("command", "")),
             "restart_service": lambda p: self.restart_service(),
-            "rollback": lambda p: self.rollback(),
             "rpi_status": lambda p: self.rpi_status(),
             "install_package": lambda p: self.install_package(p.get("name", ""), p.get("manager", "pip")),
         }

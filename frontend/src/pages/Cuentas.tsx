@@ -3,8 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { get } from '../api/client';
 import { Card } from '../components/ui/Card';
 
-function fmt(n: number) {
-  return `S/${n.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const currencySymbol: Record<string, string> = { PEN: 'S/', USD: '$', EUR: '€' };
+
+function fmt(n: number, moneda = 'PEN') {
+  const sym = currencySymbol[moneda] || moneda + ' ';
+  return `${sym}${n.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 const tipoLabels: Record<string, string> = {
@@ -76,7 +79,7 @@ export default function Cuentas() {
                     <p className="font-medium">{c.nombre}</p>
                     <p className="text-xs text-slate-400 capitalize">{c.tipo} · {c.moneda || 'PEN'}</p>
                   </div>
-                  <p className="text-lg font-bold font-mono">{fmt(c.saldo)}</p>
+                  <p className="text-lg font-bold font-mono">{fmt(c.saldo, c.moneda)}</p>
                 </div>
                 {metodos.length > 0 && (
                   <div className="flex gap-1.5 mt-2 flex-wrap">
@@ -121,7 +124,7 @@ export default function Cuentas() {
                         <span className="text-slate-300 truncate">{movDesc(m, selectedId)}</span>
                       </div>
                       <span className={`font-mono shrink-0 ml-2 ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
-                        {isPositive ? '+' : ''}{fmt(Math.abs(monto))}
+                        {isPositive ? '+' : ''}{fmt(Math.abs(monto), cuenta.moneda)}
                       </span>
                     </div>
                   );

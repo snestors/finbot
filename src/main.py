@@ -186,8 +186,11 @@ def run_app():
     from src.agents.admin_agent import AdminAgent
     from src.agents.chat_agent import ChatAgent
     from src.agents.action_executor import ActionExecutor
+    from src.agents.trading_agent import TradingAgent
     from src.llm import LLMClient
     from google import genai
+    from trading.bot import TradingBot
+    from trading.darwin import darwin_cycle as trading_darwin_cycle
 
     logging.basicConfig(
         level=logging.INFO,
@@ -267,6 +270,7 @@ def run_app():
     from src.repository.gasto_fijo_repo import GastoFijoRepo
     from src.repository.llm_usage_repo import LLMUsageRepo
     from src.services.sonoff import SonoffService
+    from src.services.elegoo_printer import ElegooPrinterService
     gasto_fijo_repo = GastoFijoRepo()
     llm_usage_repo = LLMUsageRepo()
     consumo_repo = ConsumoRepo()
@@ -277,7 +281,19 @@ def run_app():
         device_key="42224a14-5704-4167-96d2-516df73614e5",
     )
 
+    printer_service = ElegooPrinterService(
+        mainboard_id="58621ed80103147000001c0000000000",
+    )
+
     mcp_manager = MCPManager()
+
+    # ---- Trading Bot (standalone, scheduler-driven) ----
+    trading_bot = TradingBot(
+        api_key=settings.bitget_api_key,
+        secret=settings.bitget_secret,
+        passphrase=settings.bitget_passphrase,
+        paper_mode=False,  # Real mode
+    )
 
     whatsapp = WhatsAppChannel()
     ws_manager = WebSocketManager()
@@ -299,7 +315,8 @@ def run_app():
     registry.register("finance", FinanceAgent(llm))
     registry.register("analysis", AnalysisAgent(llm))
     registry.register("admin", admin_agent)
-    registry.register("chat", ChatAgent(llm))
+    registry.register("chat", ChatAgent(llm, mcp_manager=mcp_manager))
+    registry.register("trading", TradingAgent(llm, trading_bot=trading_bot))
 
     repos = {
         "gasto": gasto_repo, "ingreso": ingreso_repo, "deuda": deuda_repo,
@@ -312,6 +329,7 @@ def run_app():
         "consumo": consumo_repo, "pago_consumo": pago_consumo_repo,
         "consumo_config": consumo_config_repo,
         "sonoff_service": sonoff_service,
+        "printer_service": printer_service,
     }
 
     executor = ActionExecutor(
@@ -323,6 +341,7 @@ def run_app():
         movimiento_cuota_repo=movimiento_cuota_repo,
         tarjeta_periodo_repo=tarjeta_periodo_repo,
         mcp_manager=mcp_manager,
+        trading_bot=trading_bot,
     )
 
     processor = Processor(
@@ -359,6 +378,8 @@ def run_app():
         sonoff_service=sonoff_service,
         consumo_repo=consumo_repo,
         mcp_manager=mcp_manager,
+        trading_bot=trading_bot,
+        llm_client=llm,
     )
 
     # ---- Lifespan ----
@@ -376,9 +397,11 @@ def run_app():
         except Exception as e:
             logger.warning(f"MCP startup error (non-fatal): {e}")
         await sonoff_service.start()
+        await printer_service.start()
         scheduler.start()
         yield
         scheduler.stop()
+        await printer_service.stop()
         await sonoff_service.stop()
         await mcp_manager.close()
         await whatsapp.close()
@@ -415,6 +438,9 @@ def run_app():
         consumo_config_repo=consumo_config_repo,
         gasto_fijo_repo=gasto_fijo_repo,
         llm_usage_repo=llm_usage_repo,
+        printer_service=printer_service,
+        trading_bot=trading_bot,
+        llm_client=llm,
     )
 
     # ---- Start ----

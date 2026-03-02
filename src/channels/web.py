@@ -50,7 +50,10 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                sonoff_service=None, consumo_repo=None,
                pago_consumo_repo=None, consumo_config_repo=None,
                gasto_fijo_repo=None,
-               llm_usage_repo=None) -> FastAPI:
+               llm_usage_repo=None,
+               printer_service=None,
+               trading_bot=None,
+               llm_client=None) -> FastAPI:
 
     app = FastAPI(title="FinBot", docs_url="/api/docs", lifespan=lifespan)
 
@@ -608,6 +611,16 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
             stats["disk_pct"] = round(used_bytes / total_bytes * 100) if total_bytes else 0
         except Exception:
             stats["disk_total_gb"] = stats["disk_used_gb"] = stats["disk_pct"] = None
+        # WiFi signal
+        try:
+            wireless = Path("/proc/net/wireless").read_text().splitlines()
+            for line in wireless:
+                if "wlan0" in line:
+                    parts = line.split()
+                    stats["wifi_dbm"] = int(float(parts[3]))  # signal level dBm
+                    break
+        except Exception:
+            stats["wifi_dbm"] = None
         # Uptime
         try:
             uptime_secs = float(Path("/proc/uptime").read_text().split()[0])
@@ -637,6 +650,10 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                         stats["current_a"] = sonoff_service.latest.get("current_a")
                         stats["day_kwh"] = sonoff_service.latest.get("day_kwh")
                         stats["month_kwh"] = sonoff_service.latest.get("month_kwh")
+                    if printer_service and printer_service.latest:
+                        stats["printer"] = printer_service.latest
+                    if _sensor_data:
+                        stats["sensors"] = _sensor_data
                     await ws_manager.broadcast({"type": "system_stats", **stats})
             except Exception:
                 logger.debug("Stats broadcast error", exc_info=True)
@@ -646,6 +663,25 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         nonlocal _stats_task
         if _stats_task is None or _stats_task.done():
             _stats_task = asyncio.create_task(_stats_broadcast_loop())
+
+    # --- External Sensors (ESP32 SHT31, etc.) ---
+    _sensor_data: dict = {}  # latest readings by device_id
+
+    @app.post("/api/sensors")
+    async def receive_sensor_data(data: dict):
+        device_id = data.get("device_id", "unknown")
+        _sensor_data[device_id] = {
+            "temperature": data.get("temperature"),
+            "humidity": data.get("humidity"),
+            "device_id": device_id,
+            "updated_at": __import__("datetime").datetime.now().isoformat(),
+        }
+        logger.info(f"[sensor] {device_id}: T={data.get('temperature')}°C H={data.get('humidity')}%")
+        return {"ok": True}
+
+    @app.get("/api/sensors")
+    async def get_sensors():
+        return _sensor_data
 
     # --- Consumos (agua, luz, gas) ---
     @app.get("/api/consumos")
@@ -856,6 +892,70 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                 proc.kill()
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # --- Trading Bot ---
+    @app.get("/api/trading/status")
+    async def get_trading_status():
+        if not trading_bot:
+            return {"error": "Trading bot no configurado"}
+        try:
+            return trading_bot.get_status()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/api/trading/pause")
+    async def trading_pause():
+        if not trading_bot:
+            return {"error": "Trading bot no configurado"}
+        trading_bot.pause()
+        return {"ok": True}
+
+    @app.post("/api/trading/resume")
+    async def trading_resume():
+        if not trading_bot:
+            return {"error": "Trading bot no configurado"}
+        trading_bot.resume()
+        return {"ok": True}
+
+    @app.post("/api/trading/darwin")
+    async def trading_darwin():
+        if not trading_bot:
+            return {"error": "Trading bot no configurado"}
+        try:
+            from trading.darwin import darwin_cycle
+            trading_bot._ensure_loaded()
+            changes = await darwin_cycle(
+                trading_bot.brain,
+                trading_bot.journal,
+                llm=llm_client,
+            )
+            return {"changes": changes or [], "brain": trading_bot.get_brain()}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # --- Printer ---
+    @app.get("/api/printer/status")
+    async def get_printer_status():
+        if not printer_service or not printer_service.latest:
+            return {"status": "offline"}
+        return printer_service.latest
+
+    @app.get("/printer/{path:path}")
+    async def printer_proxy(path: str):
+        """Reverse proxy to the printer's local web UI for remote access via tunnel."""
+        if not printer_service or not printer_service._host:
+            return JSONResponse({"error": "Printer not found"}, status_code=503)
+        import httpx
+        url = f"http://{printer_service._host}/{path}"
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url)
+            return JSONResponse(
+                content=resp.text if resp.headers.get("content-type", "").startswith("text") else resp.json(),
+                status_code=resp.status_code,
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
 
     # --- Health ---
     @app.get("/api/health")

@@ -1,0 +1,226 @@
+"""
+FinBot Tools — MCP server (stdio) exposing admin/system tools via FastMCP.
+Run standalone: python3 src/services/tools_mcp_server.py
+"""
+import os
+import py_compile
+import subprocess
+import logging
+import tempfile
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
+
+# Paths that should NEVER be touched
+FORBIDDEN_PATHS = {"/etc/shadow", "/etc/passwd", "/boot/firmware/config.txt"}
+FORBIDDEN_PREFIXES = ["/proc", "/sys/firmware"]
+
+
+def _is_forbidden(filepath: str) -> bool:
+    """Block truly dangerous paths. Everything else is allowed."""
+    p = str(Path(filepath).resolve())
+    if p in FORBIDDEN_PATHS:
+        return True
+    return any(p.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
+
+
+def _check_python_syntax(content: str) -> str | None:
+    """Check Python syntax. Returns error message or None if OK."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False) as f:
+            f.write(content)
+            f.flush()
+            py_compile.compile(f.name, doraise=True)
+        os.unlink(f.name)
+        return None
+    except py_compile.PyCompileError as e:
+        try:
+            os.unlink(f.name)
+        except Exception:
+            pass
+        return str(e)
+
+
+# ---------------------------------------------------------------------------
+# MCP Server
+# ---------------------------------------------------------------------------
+
+mcp = FastMCP("finbot-tools")
+
+
+@mcp.tool()
+def read_file(path: str) -> str:
+    """Read any file on the system. Absolute or relative path."""
+    filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
+    if _is_forbidden(str(filepath)):
+        return f"Error: Path '{path}' is forbidden"
+    if not filepath.exists():
+        return f"Error: File '{path}' not found"
+    try:
+        content = filepath.read_text(encoding="utf-8")
+        if len(content) > 15000:
+            return content[:15000] + f"\n\n... (truncated, total {len(content)} chars)"
+        return content
+    except UnicodeDecodeError:
+        return f"Error: '{path}' is a binary file"
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+@mcp.tool()
+def write_file(path: str, content: str) -> str:
+    """Write/overwrite a file. Python syntax validation."""
+    filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
+    if _is_forbidden(str(filepath)):
+        return f"Error: Path '{path}' is forbidden"
+    try:
+        if filepath.suffix == '.py':
+            syntax_err = _check_python_syntax(content)
+            if syntax_err:
+                return f"Error: Syntax error — NOT written. Fix: {syntax_err}"
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text(content, encoding="utf-8")
+        return f"OK: '{path}' written ({len(content)} chars)"
+    except Exception as e:
+        return f"Error writing file: {e}"
+
+
+@mcp.tool()
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Replace text in a file. Python syntax validation."""
+    filepath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
+    if _is_forbidden(str(filepath)):
+        return f"Error: Path '{path}' is forbidden"
+    if not filepath.exists():
+        return f"Error: File '{path}' not found"
+    try:
+        content = filepath.read_text(encoding="utf-8")
+        if old_text not in content:
+            return f"Error: old_text not found in '{path}'. Check exact whitespace/indentation."
+        new_content = content.replace(old_text, new_text, 1)
+        if filepath.suffix == '.py':
+            syntax_err = _check_python_syntax(new_content)
+            if syntax_err:
+                return f"Error: Edit would break syntax — NOT saved. Fix: {syntax_err}"
+        filepath.write_text(new_content, encoding="utf-8")
+        return f"OK: Edited '{path}'"
+    except Exception as e:
+        return f"Error editing: {e}"
+
+
+@mcp.tool()
+def list_files(path: str = "") -> str:
+    """List files in any directory."""
+    dirpath = Path(path) if path.startswith("/") else PROJECT_ROOT / path
+    if not dirpath.exists():
+        return f"Error: Directory '{path}' not found"
+    try:
+        items = []
+        skip = {".git", "__pycache__", "node_modules", "venv", ".cache"}
+        for item in sorted(dirpath.iterdir()):
+            if item.name in skip or (item.name.startswith(".") and item.name != ".env"):
+                continue
+            prefix = "[DIR]" if item.is_dir() else f"[{item.stat().st_size}B]"
+            items.append(f"{prefix} {item.name}")
+        return "\n".join(items) or "(empty)"
+    except PermissionError:
+        return f"Error: Permission denied for '{path}'"
+    except Exception as e:
+        return f"Error listing files: {e}"
+
+
+@mcp.tool()
+def run_command(command: str) -> str:
+    """Run any shell command on the RPi. No restrictions — the agent is trusted."""
+    if not command.strip():
+        return "Error: Empty command"
+    dangerous = ["rm -rf /", "mkfs", "dd if=", "> /dev/sd", ":(){ :|:& };:"]
+    for d in dangerous:
+        if d in command:
+            return f"Error: Blocked dangerous pattern: {d}"
+    try:
+        r = subprocess.run(
+            command, shell=True, capture_output=True, text=True,
+            timeout=60, cwd=str(PROJECT_ROOT),
+        )
+        output = (r.stdout + r.stderr).strip()
+        if len(output) > 8000:
+            output = output[:8000] + "\n... (truncated)"
+        return output if output else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Command timed out (>60s)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def restart_service() -> str:
+    """Restart FinBot service."""
+    try:
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "finbot"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return "OK: FinBot restarting..."
+        return f"Restart failed: {result.stderr}"
+    except Exception as e:
+        return f"Error restarting: {e}"
+
+
+@mcp.tool()
+def rpi_status() -> str:
+    """Get RPi system status (temp, RAM, disk, uptime, services)."""
+    parts = []
+    cmds = [
+        ("Temp", "vcgencmd measure_temp"),
+        ("RAM", "free -m | grep Mem | awk '{printf \"%dMB/%dMB (%.0f%%)\", $3, $2, $3/$2*100}'"),
+        ("Disco", "df -h / | tail -1 | awk '{printf \"%s/%s (%s)\", $3, $2, $5}'"),
+        ("Uptime", "uptime -p"),
+        ("CPU", "top -bn1 | grep 'Cpu(s)' | awk '{printf \"%.1f%%\", $2}'"),
+        ("Servicios", "systemctl is-active finbot cloudflared 2>/dev/null | paste -sd' '"),
+    ]
+    for label, cmd in cmds:
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+            parts.append(f"{label}: {r.stdout.strip()}")
+        except Exception:
+            parts.append(f"{label}: N/A")
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def install_package(name: str, manager: str = "pip") -> str:
+    """Install a Python or apt package."""
+    if not name or not name.replace("-", "").replace("_", "").replace(".", "").isalnum():
+        return f"Error: Invalid package name '{name}'"
+    try:
+        if manager == "pip":
+            r = subprocess.run(
+                ["pip", "install", name],
+                capture_output=True, text=True, timeout=120,
+                cwd=str(PROJECT_ROOT),
+            )
+        elif manager == "apt":
+            r = subprocess.run(
+                ["sudo", "apt-get", "install", "-y", name],
+                capture_output=True, text=True, timeout=180,
+            )
+        else:
+            return f"Error: Unknown manager '{manager}'. Use pip or apt."
+        output = (r.stdout + r.stderr).strip()
+        if r.returncode == 0:
+            return f"OK: {name} installed via {manager}"
+        return f"Error installing {name}: {output[-500:]}"
+    except subprocess.TimeoutExpired:
+        return "Error: Install timed out"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")

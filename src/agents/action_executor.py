@@ -28,7 +28,8 @@ class ActionExecutor:
                  gasto_cuota_repo=None,
                  movimiento_cuota_repo=None,
                  tarjeta_periodo_repo=None,
-                 mcp_manager=None):
+                 mcp_manager=None,
+                 trading_bot=None):
         self.repos = repos
         self.currency = currency_service or CurrencyService()
         self.sunat = sunat_service or SunatTipoCambio()
@@ -37,6 +38,7 @@ class ActionExecutor:
         self.movimiento_cuota_repo = movimiento_cuota_repo
         self.tarjeta_periodo_repo = tarjeta_periodo_repo
         self.mcp_manager = mcp_manager
+        self.trading_bot = trading_bot
 
         # Load plugins
         self.plugins = PluginManager()
@@ -83,6 +85,15 @@ class ActionExecutor:
             "consulta_consumo": self._do_consulta_consumo,
             "set_config_consumo": self._do_set_config_consumo,
             "registrar_consumo": self._do_registrar_consumo,
+            # Trading bot
+            "trading_status": self._do_trading_status,
+            "trading_pause": self._do_trading_pause,
+            "trading_resume": self._do_trading_resume,
+            "trading_set_param": self._do_trading_set_param,
+            # 3D Printer
+            "printer_status": self._do_printer_status,
+            "printer_pause": self._do_printer_pause,
+            "printer_resume": self._do_printer_resume,
         }
 
     async def execute(self, accion: dict) -> dict:
@@ -242,6 +253,11 @@ class ActionExecutor:
         # Resolve cuenta
         cuenta_id = await self._auto_link_cuenta(accion)
         cuenta_destino_id = accion.get("cuenta_destino_id")
+        tarjeta_id_raw = accion.get("tarjeta_id")
+
+        # Validate: gastos/ingresos MUST have cuenta_id or tarjeta_id
+        if mov_tipo in ("gasto", "ingreso") and not cuenta_id and not tarjeta_id_raw:
+            return {"ok": False, "error": f"Falta cuenta_id o tarjeta_id para {mov_tipo}. Pregunta al usuario con qué cuenta/tarjeta pagó."}
 
         # Currency conversion
         monto_cuenta = monto
@@ -850,6 +866,109 @@ class ActionExecutor:
     async def _do_importar_calendario(self, accion: dict) -> dict:
         # Calendar import now handled via MCP tools (get_events, etc.)
         return {"data_response": "Usa las herramientas MCP de Calendar para gestionar eventos."}
+
+    # =========================================================================
+    # Trading bot actions
+    # =========================================================================
+
+    async def _do_trading_status(self, accion: dict) -> dict:
+        if not self.trading_bot:
+            return {"data_response": "Bot de trading no esta configurado."}
+        try:
+            status = self.trading_bot.get_status()
+            # Format for readable response
+            state = status.get("state", {})
+            brain = status.get("brain", {})
+            journal = status.get("journal_stats", {})
+            recent = status.get("recent_trades", [])
+            balance = status.get("balance", 0)
+
+            lines = []
+            mode = "PAPER" if state.get("paper_mode") else "REAL"
+            paused = " (PAUSADO)" if state.get("paused") else ""
+            lines.append(f"Bot {mode}{paused} | Balance: ${balance:.2f}")
+
+            if state.get("has_position"):
+                pos = state["position"]
+                lines.append(f"Posicion abierta: {pos['side'].upper()} {pos['pair']} @ {pos['entry_price']:.4f}")
+                lines.append(f"  SL={pos.get('sl', 0):.4f} TP={pos.get('tp', 0):.4f} Trailing={'SI' if pos.get('trailing_active') else 'NO'}")
+
+            lines.append(f"Trades: {journal.get('total', 0)} | WR: {journal.get('win_rate', 0)}% | PnL: ${journal.get('total_pnl', 0):.4f}")
+            lines.append(f"Streak: {brain.get('streak', 0)} | Evoluciones: {brain.get('evolve_count', 0)}")
+
+            if brain.get("killed_pairs"):
+                lines.append(f"Pares KILLED: {', '.join(brain['killed_pairs'])}")
+            if brain.get("killed_strategies"):
+                lines.append(f"Estrategias KILLED: {', '.join(brain['killed_strategies'])}")
+
+            params = brain.get("params", {})
+            lines.append(f"Params: leverage={params.get('leverage_default')}x SL={params.get('sl_atr_mult')}xATR TP={params.get('tp_atr_mult')}xATR")
+
+            if recent:
+                lines.append("Ultimos trades:")
+                for t in recent[-3:]:
+                    pnl = t.get("pnl", 0)
+                    emoji = "W" if pnl > 0 else "L"
+                    lines.append(f"  [{emoji}] {t.get('pair')} {t.get('side')} PnL=${pnl:.4f} ({t.get('reason')})")
+
+            return {"data_response": "\n".join(lines)}
+        except Exception as e:
+            logger.error(f"trading_status error: {e}", exc_info=True)
+            return {"data_response": f"Error leyendo estado del bot: {e}"}
+
+    async def _do_trading_pause(self, accion: dict) -> dict:
+        if not self.trading_bot:
+            return {"data_response": "Bot de trading no esta configurado."}
+        self.trading_bot.pause()
+        return {"ok": True, "data_response": "Bot de trading pausado."}
+
+    async def _do_trading_resume(self, accion: dict) -> dict:
+        if not self.trading_bot:
+            return {"data_response": "Bot de trading no esta configurado."}
+        self.trading_bot.resume()
+        return {"ok": True, "data_response": "Bot de trading reanudado."}
+
+    async def _do_trading_set_param(self, accion: dict) -> dict:
+        if not self.trading_bot:
+            return {"data_response": "Bot de trading no esta configurado."}
+        key = accion.get("key", "")
+        value = accion.get("value")
+        if not key or value is None:
+            return {"ok": False, "data_response": "Falta key o value."}
+        ok = self.trading_bot.set_param(key, value)
+        if ok:
+            return {"ok": True, "data_response": f"Parametro {key} actualizado a {value}."}
+        return {"ok": False, "data_response": f"Parametro invalido: {key}"}
+
+    # ------------------------------------------------------------------
+    # 3D Printer handlers
+    # ------------------------------------------------------------------
+
+    async def _do_printer_status(self, accion: dict) -> dict:
+        ps = self.repos.get("printer_service")
+        if not ps:
+            return {"data_response": "Servicio de impresora no configurado."}
+        if not ps.latest:
+            return {"data_response": "Impresora no encontrada en la red."}
+        return {"data_response": ps.get_summary()}
+
+    async def _do_printer_pause(self, accion: dict) -> dict:
+        ps = self.repos.get("printer_service")
+        if not ps:
+            return {"data_response": "Servicio de impresora no configurado."}
+        ok = ps.pause()
+        if ok:
+            return {"ok": True, "data_response": "Impresora pausada."}
+        return {"ok": False, "data_response": "No se pudo pausar (impresora no conectada)."}
+
+    async def _do_printer_resume(self, accion: dict) -> dict:
+        ps = self.repos.get("printer_service")
+        if not ps:
+            return {"data_response": "Servicio de impresora no configurado."}
+        ok = ps.resume()
+        if ok:
+            return {"ok": True, "data_response": "Impresora reanudada."}
+        return {"ok": False, "data_response": "No se pudo reanudar (impresora no conectada)."}
 
     async def _resumen_hoy_detallado(self) -> str:
         mov_repo = self.repos["movimiento"]
