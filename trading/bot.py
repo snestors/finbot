@@ -57,6 +57,24 @@ class TradingBot:
         self._sentinel_last_check = 0
         self._sentinel_interventions = 0
         self._sentinel_decisions = []
+        # Activity log (ring buffer, max 50 entries)
+        self._activity_log: list[dict] = []
+        self._activity_max = 50
+
+    def _log_activity(self, event: str, detail: str = "", **extra):
+        """Append to activity ring buffer."""
+        from datetime import datetime, timezone, timedelta
+        lima_tz = timezone(timedelta(hours=-5))
+        entry = {
+            "time": datetime.now(lima_tz).strftime("%H:%M:%S"),
+            "ts": time.time(),
+            "event": event,
+            "detail": detail,
+            **extra,
+        }
+        self._activity_log.append(entry)
+        if len(self._activity_log) > self._activity_max:
+            self._activity_log = self._activity_log[-self._activity_max:]
 
     def _ensure_loaded(self):
         """Lazy load persistent data."""
@@ -110,7 +128,10 @@ class TradingBot:
             result = self._monitor_position(pos)
 
             # If still monitoring (not closed), maybe run Sentinel
-            if result.get("action") == "monitoring" and llm:
+            # Skip sentinel during grace period — trade needs time to develop
+            if (result.get("action") == "monitoring"
+                    and result.get("reason") != "grace_period"
+                    and llm):
                 sentinel_result = await self._maybe_run_sentinel(pos, llm)
                 if sentinel_result:
                     return sentinel_result
@@ -172,7 +193,8 @@ class TradingBot:
         )
         if should_close:
             # Fee-aware check: if net PnL after fees is negative, skip trailing
-            estimated_fees = 0.095 * 2  # open + close
+            open_fee = pos.get("open_fee", 0.05)
+            estimated_fees = open_fee + 0.05  # actual open + estimated close
             net_pnl_est = pnl_usd - estimated_fees
             if net_pnl_est < 0:
                 logger.info(f"Trailing skip: net_pnl_est=${net_pnl_est:.4f} < 0 "
@@ -202,6 +224,8 @@ class TradingBot:
         logger.info(f"Monitor: {pos['side']} {short_pair} "
                      f"PnL={pnl_pct_leveraged:+.2f}% (${pnl_usd:+.4f}) "
                      f"peak={peak:.2f}%{trail}")
+        self._log_activity("monitor", f"{pos['side']} {short_pair} "
+                           f"PnL={pnl_pct_leveraged:+.2f}% (${pnl_usd:+.4f}){trail}")
         return {"action": "monitoring", "pair": pair,
                 "pnl_pct": round(pnl_pct_leveraged, 2),
                 "pnl_usd": round(pnl_usd, 4),
@@ -248,6 +272,7 @@ class TradingBot:
 
         if action == "HOLD":
             logger.info(f"Sentinel: HOLD — {decision.get('reason', '')}")
+            self._log_activity("sentinel", "HOLD", reason=decision.get("reason", ""))
             return None
 
         self._sentinel_interventions += 1
@@ -259,6 +284,9 @@ class TradingBot:
             pos["sl"] = new_sl
             self.state.save()
             logger.info(f"Sentinel: TIGHTEN SL {old_sl:.6f} → {new_sl:.6f}")
+            short_pair = pair.split("/")[0]
+            self._log_activity("sentinel", f"TIGHTEN {short_pair} SL {old_sl:.4f} → {new_sl:.4f}",
+                               reason=decision.get("reason", ""))
             return {"action": "sentinel_tighten", "pair": pair,
                     "old_sl": old_sl, "new_sl": new_sl,
                     "reason": decision.get("reason", "")}
@@ -278,6 +306,9 @@ class TradingBot:
                 pnl_pct = (entry - current_price) / entry * 100
             pnl_usd = margin * (pnl_pct * leverage / 100)
             logger.info(f"Sentinel: CLOSE — {decision.get('reason', '')}")
+            short_pair = pair.split("/")[0]
+            self._log_activity("sentinel", f"CLOSE {short_pair}",
+                               reason=decision.get("reason", ""))
             return self._close_trade(pair, pnl_usd, "sentinel_close", current_price)
 
         if action == "LET_RUN":
@@ -286,6 +317,9 @@ class TradingBot:
             pos["trailing_trigger_override"] = new_trigger
             self.state.save()
             logger.info(f"Sentinel: LET_RUN — trailing trigger {old_trigger} → {new_trigger}")
+            short_pair = pair.split("/")[0]
+            self._log_activity("sentinel", f"LET_RUN {short_pair} trailing {old_trigger}% → {new_trigger:.1f}%",
+                               reason=decision.get("reason", ""))
             return {"action": "sentinel_let_run", "pair": pair,
                     "new_trailing_trigger": new_trigger,
                     "reason": decision.get("reason", "")}
@@ -402,6 +436,10 @@ CONTEXTO:
                      f"gross=${pnl:.4f} fees=${total_fee:.4f} net=${net_pnl:.4f} "
                      f"reason={reason} hold={hold_seconds:.0f}s")
 
+        short_pair = pair.split("/")[0]
+        self._log_activity("close", f"{short_pair} {pos['side']} ${net_pnl:+.4f}",
+                           reason=reason, gross=round(pnl, 4), fees=round(total_fee, 4))
+
         return {"action": "closed", "trade": trade}
 
     # ------------------------------------------------------------------
@@ -425,12 +463,43 @@ CONTEXTO:
         if not candidate:
             return {"action": "no_signal", "scanned": len(CONFIG.get("pairs", []))}
 
-        # Pre-trade filter
+        # Hard regime filter (deterministic, no LLM needed)
+        regime = self.context.regime
+        contra_score_min = CONFIG.get("contra_trend_min_score", 135)
+        if (regime == "trending_up" and candidate.direction == "short"
+                and candidate.score < contra_score_min):
+            reason = (f"Hard filter: short in trending_up needs score >= "
+                      f"{contra_score_min}, got {candidate.score:.1f}")
+            logger.info(f"Pre-trade BLOCKED (hard): {candidate.pair} "
+                        f"{candidate.direction} — {reason}")
+            short_pair = candidate.pair.split("/")[0]
+            self._log_activity("blocked", f"{candidate.direction} {short_pair} score={candidate.score:.0f}",
+                               reason=reason, filter="hard")
+            return {"action": "pretrade_blocked", "pair": candidate.pair,
+                    "direction": candidate.direction,
+                    "score": candidate.score, "reason": reason}
+        if (regime == "trending_down" and candidate.direction == "long"
+                and candidate.score < contra_score_min):
+            reason = (f"Hard filter: long in trending_down needs score >= "
+                      f"{contra_score_min}, got {candidate.score:.1f}")
+            logger.info(f"Pre-trade BLOCKED (hard): {candidate.pair} "
+                        f"{candidate.direction} — {reason}")
+            short_pair = candidate.pair.split("/")[0]
+            self._log_activity("blocked", f"{candidate.direction} {short_pair} score={candidate.score:.0f}",
+                               reason=reason, filter="hard")
+            return {"action": "pretrade_blocked", "pair": candidate.pair,
+                    "direction": candidate.direction,
+                    "score": candidate.score, "reason": reason}
+
+        # LLM pre-trade filter (nuanced check)
         if llm:
             check = await self._pretrade_check(candidate, llm)
             if not check.get("allow", True):
                 logger.info(f"Pre-trade BLOCKED: {candidate.pair} "
                             f"{candidate.direction} — {check.get('reason', '')}")
+                short_pair = candidate.pair.split("/")[0]
+                self._log_activity("blocked", f"{candidate.direction} {short_pair} score={candidate.score:.0f}",
+                                   reason=check.get("reason", ""), filter="llm")
                 return {"action": "pretrade_blocked", "pair": candidate.pair,
                         "direction": candidate.direction,
                         "score": candidate.score,
@@ -489,12 +558,17 @@ CONTEXTO:
         summary = " | ".join(scan_details)
         if not candidates:
             logger.info(f"Scan[{regime}]: {summary} → sin candidatos (min={min_score})")
+            self._log_activity("scan", f"[{regime}] {summary}", result="no_signal",
+                               min_score=min_score)
             return None
 
         best = max(candidates, key=lambda s: s.score)
         short_best = best.pair.split("/")[0]
         logger.info(f"Scan[{regime}]: {summary} → CANDIDATE {best.direction} "
                      f"{short_best} score={best.score:.1f}")
+        self._log_activity("scan", f"[{regime}] {summary}",
+                           result="candidate", candidate=f"{best.direction} {short_best}",
+                           score=best.score)
         return best
 
     def _open_trade(self, signal) -> dict:
@@ -566,13 +640,18 @@ CONTEXTO:
         )
 
         # Reset sentinel state for new position
-        self._sentinel_last_check = 0
+        # Use time.time() so sentinel waits check_interval_min before first check
+        self._sentinel_last_check = time.time()
         self._sentinel_interventions = 0
         self._sentinel_decisions = []
 
         logger.info(f"Opened {signal.direction} {pair} @ {price:.4f} "
                      f"score={signal.score} strategy={signal.strategy} "
                      f"SL={sl:.4f} TP={tp:.4f} fee=${open_fee:.4f}")
+
+        short_pair = pair.split("/")[0]
+        self._log_activity("open", f"{signal.direction.upper()} {short_pair} @ {price:.4f}",
+                           score=signal.score, strategy=signal.strategy)
 
         return {"action": "opened", "pair": pair, "side": signal.direction,
                 "price": price, "score": signal.score,
@@ -594,6 +673,7 @@ CONTEXTO:
             "balance": self.exchange.fetch_equity(),
             "config": {k: v for k, v in CONFIG.items() if k != "paper_mode"},
             "context": self.context.summary(),
+            "activity": self._activity_log[-30:],
         }
 
     def get_brain(self) -> dict:

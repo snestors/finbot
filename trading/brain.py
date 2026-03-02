@@ -144,7 +144,7 @@ class Brain:
 
             for regime_key in sw[strategy]:
                 if wr > 0.4:
-                    sw[strategy][regime_key] = min(sw[strategy][regime_key] * 1.1, 2.0)
+                    sw[strategy][regime_key] = min(sw[strategy][regime_key] * 1.1, 1.5)
                 elif wr < 0.25:
                     sw[strategy][regime_key] = max(sw[strategy][regime_key] * 0.8, 0.3)
 

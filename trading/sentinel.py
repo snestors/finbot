@@ -17,18 +17,19 @@ SENTINEL_SYSTEM = """Eres Sentinel, el monitor inteligente de posiciones de un b
 
 Tu trabajo: evaluar la posición abierta con datos en tiempo real y decidir la mejor acción táctica.
 
-ACCIONES DISPONIBLES:
-- HOLD (default): Dejar que trailing/SL/TP manejen normalmente. Usa esto si no hay razón clara para intervenir.
-- TIGHTEN: Mover el SL más cerca del precio actual para proteger ganancia. Solo cuando hay señales de reversión.
-- CLOSE: Cerrar inmediatamente. Solo para peligro inminente que trailing/SL no captaría (cambio de estructura, volume spike contra la posición, etc).
-- LET_RUN: Relajar el trailing trigger para dejar correr un winner. Solo cuando el momentum es fuerte a favor y no hay señales de agotamiento.
+ACCIONES DISPONIBLES (de más a menos común):
+1. HOLD (default, ~70% de las veces): Dejar que trailing/SL/TP manejen. Usa esto si no hay razón CLARA para intervenir. HOLD es siempre la opción más segura.
+2. TIGHTEN (~20%): Mover SL más cerca para proteger ganancia. Solo cuando hay señales claras de reversión Y el PnL es positivo.
+3. LET_RUN (~8%): Relajar trailing para dejar correr un winner. Solo si PnL positivo Y momentum fuerte a favor sin señales de agotamiento.
+4. CLOSE (~2%, emergencias): Cerrar inmediatamente. SOLO para peligro catastrófico inminente que SL no captaría (crash flash, volumen extremo contra la posición, etc). NO uses CLOSE por movimientos normales del mercado.
 
-REGLAS:
-- Por defecto, HOLD. Solo interviene cuando hay evidencia clara.
-- TIGHTEN: el new_sl DEBE estar entre el SL actual y el precio actual (más protectivo, NUNCA más lejos).
-- CLOSE: usa con extrema precaución. Cada cierre tiene fees (~$0.095). No cierres por ruido.
+REGLAS CRÍTICAS:
+- HOLD por defecto. La barra para intervenir es ALTA.
+- Cada CLOSE cuesta ~$0.10 en fees adicionales (el trade ya pagó ~$0.05 de fee de apertura). Con margen de ~$10, necesitas >0.95% de ganancia solo para cubrir fees.
+- NO cierres trades con PnL entre -$0.15 y +$0.15 — es ruido, y cerrar solo agrega fees. Deja que SL/TP hagan su trabajo.
+- NO cierres trades que llevan poco tiempo abiertos (< 5 min). Los trades necesitan tiempo para desarrollarse. Las fluctuaciones iniciales son normales.
+- TIGHTEN: new_sl DEBE estar entre SL actual y precio actual (más protectivo, NUNCA más lejos).
 - LET_RUN: solo si PnL es positivo Y momentum fuerte a favor.
-- Considera los fees: un trade necesita >0.95% de ganancia para ser rentable.
 - Respeta las directivas de Darwin (estratégicas).
 
 Responde SOLO con JSON válido (sin markdown, sin explicaciones fuera del JSON):
@@ -158,6 +159,33 @@ def validate_sentinel_action(decision: dict, pos: dict,
         return {"action": "HOLD", "reason": "invalid action from LLM",
                 "new_sl": None, "observation": None}
 
+    # CLOSE validation: minimum hold time and PnL threshold
+    if action == "CLOSE":
+        hold_seconds = time.time() - pos.get("open_time", time.time())
+        hold_min = hold_seconds / 60
+
+        # Don't close trades younger than 3 min — noise, let SL handle
+        if hold_min < 3:
+            logger.warning(f"Sentinel CLOSE rejected: trade only {hold_min:.1f}min old, "
+                           "too young. Falling back to HOLD.")
+            return {"action": "HOLD", "reason": f"CLOSE rejected: trade too young ({hold_min:.1f}min)",
+                    "new_sl": None, "observation": decision.get("observation")}
+
+        # Don't close in the PnL noise zone (-$0.15 to +$0.15) — fees make it pointless
+        entry = pos["entry_price"]
+        leverage = pos.get("leverage", 8)
+        margin = pos.get("margin", 0)
+        if pos["side"] == "long":
+            pnl_pct = (current_price - entry) / entry * 100
+        else:
+            pnl_pct = (entry - current_price) / entry * 100
+        pnl_usd = margin * (pnl_pct * leverage / 100)
+        if -0.15 < pnl_usd < 0.15:
+            logger.warning(f"Sentinel CLOSE rejected: PnL ${pnl_usd:.4f} in noise zone. "
+                           "Let SL/TP handle.")
+            return {"action": "HOLD", "reason": f"CLOSE rejected: PnL ${pnl_usd:.4f} noise zone",
+                    "new_sl": None, "observation": decision.get("observation")}
+
     if action == "TIGHTEN":
         new_sl = decision.get("new_sl")
         if new_sl is None:
@@ -221,7 +249,8 @@ async def sentinel_check(pos: dict, exchange, context, journal_recent: list,
     else:
         pnl_pct = (entry - current_price) / entry * 100
     pnl_usd = margin * (pnl_pct * leverage / 100)
-    estimated_fees = 0.095 * 2  # open + close fees estimate
+    open_fee = pos.get("open_fee", 0.05)
+    estimated_fees = open_fee + 0.05  # actual open + estimated close
     net_pnl = pnl_usd - estimated_fees
 
     prompt = _build_sentinel_prompt(

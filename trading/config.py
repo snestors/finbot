@@ -41,4 +41,10 @@ CONFIG = {
     "sentinel_check_interval_min": 5,
     "sentinel_max_interventions": 3,
     "sentinel_aggression": "moderate",
+
+    # Hard contra-trend filter: block contra-trend trades below this score
+    "contra_trend_min_score": 135,
+
+    # Max consecutive losses before global cooldown
+    "max_consecutive_losses": 5,
 }

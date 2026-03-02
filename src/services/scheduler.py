@@ -182,7 +182,7 @@ class SchedulerService:
             self.scheduler.add_job(
                 self._trading_darwin,
                 "cron",
-                minute=0,
+                minute="0,30",
                 id="trading_darwin",
             )
 

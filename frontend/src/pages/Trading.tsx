@@ -57,6 +57,16 @@ interface TradingStatus {
     strategies: string[];
     [key: string]: any;
   };
+  activity?: {
+    time: string;
+    event: string;
+    detail: string;
+    reason?: string;
+    score?: number;
+    result?: string;
+    filter?: string;
+    [key: string]: any;
+  }[];
   error?: string;
 }
 
@@ -121,6 +131,7 @@ export default function Trading() {
   if (!data || data.error) return <div className="p-6 text-red-400">Error: {data?.error || 'No data'}</div>;
 
   const { state, brain, journal_stats, recent_trades, balance, config } = data;
+  const activity = (data as any).activity || [];
   const pos = state.position;
 
   return (
@@ -203,6 +214,47 @@ export default function Trading() {
           <p className="text-slate-400 text-sm">Sin posicion abierta — escaneando senales cada minuto</p>
         </Card>
       )}
+
+      {/* Activity Feed */}
+      <Card>
+        <h2 className="text-sm font-bold text-slate-400 uppercase mb-3">Actividad en Tiempo Real</h2>
+        <div className="max-h-64 overflow-y-auto space-y-1 text-xs font-mono">
+          {activity.length === 0 ? (
+            <p className="text-slate-500">Esperando actividad...</p>
+          ) : (
+            [...activity].reverse().map((a: any, i: number) => {
+              const eventColors: Record<string, string> = {
+                scan: 'text-slate-400',
+                open: 'text-green-400',
+                close: 'text-yellow-400',
+                blocked: 'text-orange-400',
+                sentinel: 'text-purple-400',
+                monitor: 'text-slate-500',
+              };
+              const eventIcons: Record<string, string> = {
+                scan: '🔍',
+                open: '🟢',
+                close: '🔴',
+                blocked: '🚫',
+                sentinel: '🛡️',
+                monitor: '📊',
+              };
+              const color = eventColors[a.event] || 'text-slate-400';
+              const icon = eventIcons[a.event] || '•';
+              return (
+                <div key={i} className={`flex gap-2 ${color} ${a.event === 'monitor' ? 'opacity-50' : ''}`}>
+                  <span className="text-slate-600 w-16 shrink-0">{a.time}</span>
+                  <span className="w-5 shrink-0">{icon}</span>
+                  <span className="truncate">{a.detail}</span>
+                  {a.reason && a.event !== 'scan' && a.event !== 'monitor' && (
+                    <span className="text-slate-600 truncate ml-auto">— {a.reason}</span>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </Card>
 
       {/* Recent Trades */}
       <Card>

@@ -76,6 +76,23 @@ check_interval_min [2-15], confidence_threshold [0.3-0.9], max_interventions [1-
 directives, biases y market son opcionales — inclúyelos solo si tienes observaciones relevantes."""
 
 
+def _format_param_ages(brain: Brain) -> str:
+    """Format how long ago each param was last changed."""
+    import time
+    changed_at = brain.data.get("param_changed_at", {})
+    if not changed_at:
+        return "  (sin historial de cambios recientes)"
+    now = time.time()
+    lines = []
+    for key, ts in sorted(changed_at.items()):
+        hours = (now - ts) / 3600
+        if hours < 24:
+            lines.append(f"  {key}: cambiado hace {hours:.1f}h")
+        else:
+            lines.append(f"  {key}: cambiado hace {hours / 24:.1f}d")
+    return "\n".join(lines) if lines else "  (sin cambios recientes)"
+
+
 def _build_darwin_prompt(brain: Brain, journal: Journal, recent: list,
                          context=None) -> str:
     """Build the user prompt with all trade data for Opus analysis."""
@@ -177,6 +194,8 @@ PARÁMETROS ACTUALES:
   min_score: {params.get('min_score')}
   trailing_trigger_pct: {params.get('trailing_trigger_pct')}
   trailing_distance_pct: {params.get('trailing_distance_pct')}
+NOTA: Los cambios de parámetros tienen cooldown de 3 horas. No propongas cambiar un param que se cambió recientemente.
+{_format_param_ages(brain)}
 
 ESTRATEGIAS:
 {chr(10).join(strat_lines) or '  (sin datos)'}
@@ -222,7 +241,7 @@ def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
 
         elif action == "boost":
             for regime in sw[name]:
-                sw[name][regime] = min(sw[name][regime] * 1.15, 2.5)
+                sw[name][regime] = min(sw[name][regime] * 1.15, 1.5)
             if name in killed_strats:
                 killed_strats.remove(name)
             changes.append(f"BOOST strategy {name} ({reason})")
@@ -251,6 +270,9 @@ def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
         "trailing_trigger_pct": (0.3, 1.5),
         "trailing_distance_pct": (25, 60),
     }
+    import time as _time
+    param_changed_at = brain.data.setdefault("param_changed_at", {})
+    now = _time.time()
     for key, new_val in decisions.get("params", {}).items():
         if new_val is None or key not in params:
             continue
@@ -263,7 +285,15 @@ def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
             new_val = max(lo, min(hi, new_val))
         old = params[key]
         if new_val != old:
+            # Anti-oscillation: skip if param was changed < 3 hours ago
+            last_changed = param_changed_at.get(key, 0)
+            hours_since = (now - last_changed) / 3600
+            if hours_since < 3:
+                logger.info(f"Darwin: SKIP {key} change ({old} → {new_val}), "
+                            f"changed {hours_since:.1f}h ago (cooldown 3h)")
+                continue
             params[key] = new_val
+            param_changed_at[key] = now
             changes.append(f"ADJUST {key}: {old} → {new_val}")
 
     # 4. Shared context updates
