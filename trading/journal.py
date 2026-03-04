@@ -69,6 +69,10 @@ class Journal:
         total_pnl = sum(pnls)
         total_fees = sum(t.get("fees", 0) for t in trades)
         gross_pnl = sum(t.get("gross_pnl", t.get("pnl", 0)) for t in trades)
+        win_pnls = [t.get("pnl", 0) for t in wins]
+        loss_pnls = [t.get("pnl", 0) for t in losses]
+        avg_win = round(sum(win_pnls) / len(wins), 4) if wins else 0
+        avg_loss = round(sum(loss_pnls) / len(losses), 4) if losses else 0
         return {
             "total": len(trades),
             "wins": len(wins),
@@ -78,6 +82,8 @@ class Journal:
             "gross_pnl": round(gross_pnl, 4),
             "total_fees": round(total_fees, 4),
             "avg_pnl": round(total_pnl / len(trades), 4) if trades else 0,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
             "best": round(max(pnls), 4) if pnls else 0,
             "worst": round(min(pnls), 4) if pnls else 0,
         }

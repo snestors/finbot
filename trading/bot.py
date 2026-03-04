@@ -179,32 +179,45 @@ class TradingBot:
 
         # Fee-aware trailing stop
         params = self.brain.params
-        trailing_trigger = params.get("trailing_trigger_pct", 0.5)
+        trailing_trigger = params.get("trailing_trigger_pct", 2.5)
+
+        # Hard floor: trailing_trigger never below 5% to let winners run
+        trailing_trigger = max(trailing_trigger, 5.0)
 
         # Use sentinel override if set
         override = pos.get("trailing_trigger_override")
         if override is not None:
-            trailing_trigger = override
+            trailing_trigger = max(override, 5.0)
+
+        trailing_distance = params.get("trailing_distance_pct", 24)
 
         should_close = self.state.update_trailing(
             pnl_pct_leveraged,
             trailing_trigger,
-            params.get("trailing_distance_pct", 40),
+            trailing_distance,
         )
+
         if should_close:
-            # Fee-aware check: if net PnL after fees is negative, skip trailing
-            open_fee = pos.get("open_fee", 0.05)
-            estimated_fees = open_fee + 0.05  # actual open + estimated close
-            net_pnl_est = pnl_usd - estimated_fees
-            if net_pnl_est < 0:
-                logger.info(f"Trailing skip: net_pnl_est=${net_pnl_est:.4f} < 0 "
-                            f"(fees ~${estimated_fees:.3f}), letting SL/TP handle")
-                # Reset trailing to prevent re-triggering immediately
+            # Min hold for trailing: don't close before 3 min
+            if elapsed < 180:
+                logger.info(f"Trailing hold: only {elapsed:.0f}s old, waiting for 3min min")
+                # KEEP peak_pnl_pct — don't reset to 0 (preserves info)
                 pos["trailing_active"] = False
-                pos["peak_pnl_pct"] = 0
                 self.state.save()
             else:
-                return self._close_trade(pair, pnl_usd, "trailing_stop", current_price)
+                # Fee-aware check: only skip if net PnL is significantly negative
+                open_fee = pos.get("open_fee", 0.05)
+                estimated_fees = open_fee + 0.05  # actual open + estimated close
+                net_pnl_est = pnl_usd - estimated_fees
+                if net_pnl_est < -estimated_fees:
+                    # Only skip if we'd lose more than the fees themselves
+                    logger.info(f"Trailing skip: net_pnl_est=${net_pnl_est:.4f} too negative "
+                                f"(fees ~${estimated_fees:.3f}), letting SL/TP handle")
+                    pos["trailing_active"] = False
+                    # KEEP peak_pnl_pct — don't reset to 0
+                    self.state.save()
+                else:
+                    return self._close_trade(pair, pnl_usd, "trailing_stop", current_price)
 
         # Check SL hit
         if pos["side"] == "long" and current_price <= pos["sl"]:
@@ -408,6 +421,7 @@ CONTEXTO:
             "strategy": pos.get("strategy", "unknown"),
             "score": pos.get("score", 0),
             "leverage": pos.get("leverage", 8),
+            "margin": pos.get("margin", 0),
             "hold_seconds": round(hold_seconds),
             "paper": pos.get("paper", True),
         }
@@ -475,6 +489,7 @@ CONTEXTO:
             short_pair = candidate.pair.split("/")[0]
             self._log_activity("blocked", f"{candidate.direction} {short_pair} score={candidate.score:.0f}",
                                reason=reason, filter="hard")
+            self.state.set_cooldown(candidate.pair, 5, 5)
             return {"action": "pretrade_blocked", "pair": candidate.pair,
                     "direction": candidate.direction,
                     "score": candidate.score, "reason": reason}
@@ -487,6 +502,7 @@ CONTEXTO:
             short_pair = candidate.pair.split("/")[0]
             self._log_activity("blocked", f"{candidate.direction} {short_pair} score={candidate.score:.0f}",
                                reason=reason, filter="hard")
+            self.state.set_cooldown(candidate.pair, 5, 5)
             return {"action": "pretrade_blocked", "pair": candidate.pair,
                     "direction": candidate.direction,
                     "score": candidate.score, "reason": reason}
@@ -500,6 +516,8 @@ CONTEXTO:
                 short_pair = candidate.pair.split("/")[0]
                 self._log_activity("blocked", f"{candidate.direction} {short_pair} score={candidate.score:.0f}",
                                    reason=check.get("reason", ""), filter="llm")
+                # Cooldown the blocked pair to avoid spam (5 candles = 25min)
+                self.state.set_cooldown(candidate.pair, 5, 5)
                 return {"action": "pretrade_blocked", "pair": candidate.pair,
                         "direction": candidate.direction,
                         "score": candidate.score,
@@ -532,17 +550,28 @@ CONTEXTO:
             if self.state.is_on_cooldown(pair):
                 scan_details.append(f"{short_pair}:COOLDOWN")
                 continue
+            max_daily = CONFIG.get("max_trades_per_pair_per_day", 4)
+            if self.state.get_daily_trades(pair) >= max_daily:
+                scan_details.append(f"{short_pair}:DAY_CAP")
+                continue
 
             candles = self.exchange.fetch_candles(
                 pair,
                 CONFIG.get("candle_tf", "5m"),
-                CONFIG.get("candle_count", 60),
+                CONFIG.get("candle_count", 120),
             )
             if not candles:
                 scan_details.append(f"{short_pair}:NO_DATA")
                 continue
 
-            signals = generate_signals(pair, candles, brain_weights)
+            # Fetch 15m candles for multi-timeframe trend confirmation
+            htf_candles = self.exchange.fetch_candles(pair, "15m", 40)
+
+            # Fetch 4H candles for macro trend (~8 days context)
+            macro_candles = self.exchange.fetch_candles(pair, "4h", 60)
+
+            signals = generate_signals(pair, candles, brain_weights, htf_candles,
+                                       macro_candles)
             if signals:
                 best_sig = max(signals, key=lambda s: s.score)
                 scan_details.append(
@@ -604,6 +633,21 @@ CONTEXTO:
         margin = balance * CONFIG.get("margin_pct", 0.5)
         leverage = params.get("leverage_default", CONFIG["leverage_default"])
 
+        # Minimum profit filter: expected TP must cover 2× estimated fees
+        estimated_fees = 0.10  # ~$0.05 open + ~$0.05 close
+        min_gross_profit = estimated_fees * CONFIG.get("min_profit_fee_mult", 2.0)
+        tp_pct = tp_dist / price if price > 0 else 0
+        expected_gross = margin * (tp_pct * leverage)
+        if expected_gross < min_gross_profit:
+            short_pair = pair.split("/")[0]
+            reason = (f"Expected gross ${expected_gross:.3f} < "
+                      f"min ${min_gross_profit:.2f} (2× fees)")
+            logger.info(f"Trade REJECTED (low profit): {short_pair} — {reason}")
+            self._log_activity("rejected", f"{short_pair} {signal.direction}",
+                               reason=reason)
+            self.state.set_cooldown(pair, 3, 5)
+            return {"action": "rejected", "pair": pair, "reason": reason}
+
         if margin < 1:
             return {"action": "skip", "reason": "insufficient_balance",
                     "balance": balance}
@@ -639,6 +683,9 @@ CONTEXTO:
             open_fee=open_fee,
         )
 
+        # Track daily trade count
+        self.state.increment_daily_trades(pair)
+
         # Reset sentinel state for new position
         # Use time.time() so sentinel waits check_interval_min before first check
         self._sentinel_last_check = time.time()
@@ -665,8 +712,32 @@ CONTEXTO:
     def get_status(self) -> dict:
         """Full status for the trading agent."""
         self._ensure_loaded()
+        state_summary = self.state.summary()
+
+        # Enrich position with live PnL
+        pos = state_summary.get("position")
+        if pos and pos.get("entry_price"):
+            try:
+                candles = self.exchange.fetch_candles(pos["pair"], "1m", 1)
+                if candles:
+                    current_price = candles[-1][4]
+                    entry = pos["entry_price"]
+                    leverage = pos.get("leverage", 8)
+                    margin = pos.get("margin", 0)
+                    if pos["side"] == "long":
+                        pnl_pct = (current_price - entry) / entry * 100
+                    else:
+                        pnl_pct = (entry - current_price) / entry * 100
+                    pnl_pct_lev = pnl_pct * leverage
+                    pnl_usd = margin * (pnl_pct_lev / 100)
+                    pos["current_price"] = current_price
+                    pos["pnl_pct"] = round(pnl_pct_lev, 2)
+                    pos["pnl_usd"] = round(pnl_usd, 4)
+            except Exception:
+                pass
+
         return {
-            "state": self.state.summary(),
+            "state": state_summary,
             "brain": self.brain.summary(),
             "journal_stats": self.journal.get_stats(),
             "recent_trades": self.journal.get_recent(10),

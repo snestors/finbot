@@ -14,8 +14,15 @@ class Signal:
     indicators: dict
 
 
-def generate_signals(pair: str, candles: list[list], brain_weights: dict = None) -> list[Signal]:
-    """Analyze candles and return scored signal candidates."""
+def generate_signals(pair: str, candles: list[list], brain_weights: dict = None,
+                      htf_candles: list[list] = None,
+                      macro_candles: list[list] = None) -> list[Signal]:
+    """Analyze candles and return scored signal candidates.
+
+    Args:
+        htf_candles: Optional higher-timeframe candles (15m) for trend confirmation.
+        macro_candles: Optional 4H candles for macro trend filter (~8 days context).
+    """
     if not candles or len(candles) < 30:
         return []
 
@@ -26,6 +33,13 @@ def generate_signals(pair: str, candles: list[list], brain_weights: dict = None)
 
     # Calculate indicators
     atr = _atr(highs, lows, closes, 14)
+
+    # ATR minimum filter: skip if market too quiet to trade profitably
+    price = closes[-1]
+    atr_pct = (atr / price * 100) if price > 0 else 0
+    if atr_pct < 0.25:
+        return []
+
     rsi = _rsi(closes, 14)
     roc_10 = _roc(closes, 10)
     roc_5 = _roc(closes, 5)
@@ -38,6 +52,9 @@ def generate_signals(pair: str, candles: list[list], brain_weights: dict = None)
     price = closes[-1]
     signals = []
 
+    # ---- Macro trend (4H) — determines which strategies are allowed ----
+    macro = _macro_trend(macro_candles)
+
     # ---- Strategy 1: Volume Momentum (Contrarian Fade) ----
     sig = _volume_momentum(pair, price, rsi, roc_10, roc_5, roc_20,
                            adx, vol_delta, atr, brain_weights)
@@ -45,10 +62,42 @@ def generate_signals(pair: str, candles: list[list], brain_weights: dict = None)
         signals.append(sig)
 
     # ---- Strategy 2: VWAP Reversion ----
-    sig = _vwap_reversion(pair, price, vwap, rsi, vol_delta, vol_ratio,
-                          candles, atr, brain_weights)
+    # Only allow mean-reversion when macro is ranging or aligned with direction
+    if macro == "ranging" or macro == "neutral":
+        sig = _vwap_reversion(pair, price, vwap, rsi, vol_delta, vol_ratio,
+                              candles, atr, brain_weights)
+        if sig:
+            signals.append(sig)
+    else:
+        # In trending macro: only allow VWAP reversion if aligned with trend
+        sig = _vwap_reversion(pair, price, vwap, rsi, vol_delta, vol_ratio,
+                              candles, atr, brain_weights)
+        if sig:
+            if (macro == "bullish" and sig.direction == "long") or \
+               (macro == "bearish" and sig.direction == "short"):
+                signals.append(sig)
+            else:
+                logger.info(f"Macro filter: blocked {sig.direction} VWAP {sig.pair} "
+                            f"(4H trend {macro})")
+
+    # ---- Strategy 3: EMA Trend (trend-following) ----
+    sig = _ema_trend(pair, candles, atr, brain_weights)
     if sig:
         signals.append(sig)
+
+    # ---- Multi-timeframe filter: align with 15m trend ----
+    htf = _htf_trend(htf_candles)
+    if htf != "neutral":
+        filtered = []
+        for sig in signals:
+            if sig.direction == "long" and htf == "bearish":
+                logger.info(f"HTF filter: blocked long {sig.pair} (15m trend bearish)")
+                continue
+            if sig.direction == "short" and htf == "bullish":
+                logger.info(f"HTF filter: blocked short {sig.pair} (15m trend bullish)")
+                continue
+            filtered.append(sig)
+        return filtered
 
     return signals
 
@@ -115,8 +164,8 @@ def _vwap_reversion(pair, price, vwap, rsi, vol_delta, vol_ratio,
     direction = None
     score = 35
 
-    # LONG: price below VWAP
-    if dev_pct < -0.15 and rsi < 50:
+    # LONG: price below VWAP (raised from 0.15% to 0.35% — filter out noise)
+    if dev_pct < -0.35 and rsi < 45:
         direction = "long"
         confirms = 0
         if vol_ratio < 0.8:
@@ -131,7 +180,7 @@ def _vwap_reversion(pair, price, vwap, rsi, vol_delta, vol_ratio,
         score += min(abs(dev_pct) * 8, 10)
 
     # SHORT: price above VWAP
-    elif dev_pct > 0.15 and rsi > 50:
+    elif dev_pct > 0.35 and rsi > 55:
         direction = "short"
         confirms = 0
         if vol_ratio < 0.8:
@@ -166,6 +215,80 @@ def _vwap_reversion(pair, price, vwap, rsi, vol_delta, vol_ratio,
         strategy="vwap_reversion",
         indicators={"rsi": rsi, "vwap": vwap, "dev_pct": dev_pct,
                      "vol_delta": vol_delta, "atr": atr},
+    )
+
+
+def _ema_trend(pair, candles, atr, weights) -> Signal | None:
+    """EMA 9/21 crossover with ADX + EMA50 confirmation — trend-following.
+
+    Generates signals ALIGNED with the trend:
+    - Long in uptrends (EMA9 crosses above EMA21, price > EMA50)
+    - Short in downtrends (EMA9 crosses below EMA21, price < EMA50)
+    """
+    closes = [c[4] for c in candles]
+    if len(closes) < 55:
+        return None
+
+    highs = [c[2] for c in candles]
+    lows = [c[3] for c in candles]
+    volumes = [c[5] for c in candles]
+
+    ema9 = _ema(closes, 9)
+    ema21 = _ema(closes, 21)
+    ema50 = _ema(closes, 50)
+    ema9_prev = _ema(closes[:-1], 9)
+    ema21_prev = _ema(closes[:-1], 21)
+
+    adx = _adx(highs, lows, closes, 14)
+    rsi = _rsi(closes, 14)
+    vol_ratio = _volume_ratio(volumes)
+    price = closes[-1]
+
+    # Need confirmed trend (ADX > 22)
+    if adx < 22:
+        return None
+
+    direction = None
+    score = 40
+
+    # Bullish crossover: EMA9 just crossed above EMA21
+    if ema9 > ema21 and ema9_prev <= ema21_prev:
+        if price > ema50 and 40 <= rsi <= 68 and vol_ratio > 1.0:
+            direction = "long"
+            score += min((adx - 22) * 0.8, 12)
+            spread = (ema9 - ema21) / ema21 * 1000 if ema21 else 0
+            score += min(spread, 8)
+            if vol_ratio > 1.3:
+                score += 4
+
+    # Bearish crossover: EMA9 just crossed below EMA21
+    elif ema9 < ema21 and ema9_prev >= ema21_prev:
+        if price < ema50 and 32 <= rsi <= 60 and vol_ratio > 1.0:
+            direction = "short"
+            score += min((adx - 22) * 0.8, 12)
+            spread = (ema21 - ema9) / ema21 * 1000 if ema21 else 0
+            score += min(spread, 8)
+            if vol_ratio > 1.3:
+                score += 4
+
+    if not direction:
+        return None
+
+    w = (weights or {}).get("ema_trend", 1.0)
+    score *= w
+
+    if score < 45:
+        return None
+
+    return Signal(
+        pair=pair,
+        direction=direction,
+        score=round(score, 1),
+        strategy="ema_trend",
+        indicators={"ema9": round(ema9, 6), "ema21": round(ema21, 6),
+                     "ema50": round(ema50, 6), "adx": round(adx, 1),
+                     "rsi": round(rsi, 1), "vol_ratio": round(vol_ratio, 2),
+                     "atr": atr},
     )
 
 
@@ -301,6 +424,50 @@ def detect_regime(candles: list[list]) -> str:
     return "ranging"
 
 
+def _htf_trend(candles) -> str:
+    """Determine higher-timeframe trend from 15m candles.
+
+    Returns: 'bullish', 'bearish', or 'neutral'.
+    Used to filter 5m signals — only allow trades aligned with 15m trend.
+    """
+    if not candles or len(candles) < 25:
+        return "neutral"
+
+    closes = [c[4] for c in candles]
+    highs = [c[2] for c in candles]
+    lows = [c[3] for c in candles]
+
+    ema9 = _ema(closes, 9)
+    ema21 = _ema(closes, 21)
+    adx = _adx(highs, lows, closes, 14)
+    roc = _roc(closes, 10)
+
+    # Need minimum trend strength (ADX > 20) to filter
+    if adx < 20:
+        return "neutral"
+
+    # EMA alignment + directional confirmation
+    if ema9 > ema21 and roc > 0.05:
+        return "bullish"
+    if ema9 < ema21 and roc < -0.05:
+        return "bearish"
+
+    return "neutral"
+
+
+def _ema(closes, period) -> float:
+    """Exponential Moving Average."""
+    if not closes:
+        return 0
+    if len(closes) < period:
+        return sum(closes) / len(closes)
+    k = 2 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for price in closes[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
+
 def _small_body(candles) -> bool:
     """Check if last candle has small body (doji/indecision)."""
     if not candles:
@@ -311,3 +478,38 @@ def _small_body(candles) -> bool:
     if total_range == 0:
         return True
     return body / total_range < 0.3
+
+
+def _macro_trend(candles) -> str:
+    """Determine macro trend from 4H candles (~8 days of context).
+
+    Uses EMA20/EMA50 alignment + ADX + ROC to classify:
+    - 'bullish': strong uptrend — only allow longs / trend-following
+    - 'bearish': strong downtrend — only allow shorts / trend-following
+    - 'ranging': no clear trend — mean-reversion strategies OK
+    - 'neutral': not enough data
+    """
+    if not candles or len(candles) < 55:
+        return "neutral"
+
+    closes = [c[4] for c in candles]
+    highs = [c[2] for c in candles]
+    lows = [c[3] for c in candles]
+
+    ema20 = _ema(closes, 20)
+    ema50 = _ema(closes, 50)
+    adx = _adx(highs, lows, closes, 14)
+    roc = _roc(closes, 20)
+    price = closes[-1]
+
+    # Need minimum trend strength
+    if adx < 20:
+        return "ranging"
+
+    # EMA alignment + price position + directional confirmation
+    if ema20 > ema50 and price > ema20 and roc > 0.3:
+        return "bullish"
+    if ema20 < ema50 and price < ema20 and roc < -0.3:
+        return "bearish"
+
+    return "ranging"

@@ -17,22 +17,28 @@ logger = logging.getLogger(__name__)
 DARWIN_MODEL = "claude-opus-4-6"
 
 DARWIN_SYSTEM = """Eres el motor evolutivo (Darwin) de un bot de trading de futuros crypto.
-Tu trabajo: analizar los trades recientes y decidir qué sobrevive y qué muere.
-También estableces directivas estratégicas para Sentinel (el monitor de posiciones en tiempo real).
+Tu trabajo: analizar los trades recientes y hacer ajustes INCREMENTALES y CONSERVADORES.
 
-REGLAS:
-- Lo que funciona se potencia, lo que no se mata.
+REGLAS FUNDAMENTALES:
+- Cambios pequeños y graduales. Máximo 1-2 ajustes de parámetros por ciclo.
 - Necesitas datos suficientes para decidir (mínimo 5 trades por categoría).
-- Sé conservador: no hagas cambios drásticos sin evidencia clara.
 - Los winners se cierran por trailing_stop y duran 55-290 min.
 - Los losers rápidos (<=2 min) indican SL demasiado tight.
 - Win rate > 35% es aceptable si R:R > 1.5 (winners > losers en tamaño).
+
+PROHIBICIONES ABSOLUTAS:
+- NUNCA prohíbas una dirección completa (no "ban longs" ni "ban shorts"). El mercado cambia.
+- NUNCA mates un par con win rate >= 40%. Una racha mala no justifica eliminarlo.
+- NUNCA acumules más de 5 directivas. Menos es más. Sé conciso.
+- NUNCA pongas Sentinel en modo aggressive ni max_interventions > 5. Sentinel debe intervenir poco.
+- No hagas cambios reactivos por 1-2 trades malos. Espera patrones claros (5+ trades).
+- No cambies un parámetro más de 20% de su valor actual en un solo ciclo.
 
 CONTEXTO COMPARTIDO CON SENTINEL:
 - Sentinel monitorea posiciones abiertas cada 5 min con Opus.
 - Tus directivas guían las decisiones tácticas de Sentinel.
 - Tus biases por par influyen en el filtro pre-trade.
-- Puedes ajustar los parámetros de Sentinel (agresividad, frecuencia, etc).
+- Sentinel funciona mejor con pocas directivas claras, no con listas largas.
 
 Responde SOLO con JSON válido (sin markdown, sin explicaciones fuera del JSON):
 {
@@ -50,7 +56,7 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones fuera del JSON):
     "trailing_trigger_pct": null,
     "trailing_distance_pct": null
   },
-  "directives": ["directiva estratégica para Sentinel"],
+  "directives": ["directiva estratégica para Sentinel (máximo 5, concisas)"],
   "biases": {
     "PAIR/USDT:USDT": {"direction": "bullish|neutral|bearish", "confidence": 0.7, "reason": "breve"}
   },
@@ -69,11 +75,15 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones fuera del JSON):
 }
 
 Para params y sentinel_adjustments: usa null si no hay que cambiar, o el nuevo valor si hay que ajustar.
-Rangos válidos params: sl_atr_mult [1.8-3.0], tp_atr_mult [2.0-5.0], leverage_default [3-10],
-min_score [40-70], trailing_trigger_pct [0.3-1.5], trailing_distance_pct [25-60].
-Rangos válidos sentinel: aggression ["conservative"|"moderate"|"aggressive"],
-check_interval_min [2-15], confidence_threshold [0.3-0.9], max_interventions [1-10].
-directives, biases y market son opcionales — inclúyelos solo si tienes observaciones relevantes."""
+Rangos válidos params: sl_atr_mult [1.8-3.0], tp_atr_mult [2.0-5.0], leverage_default [3-8],
+min_score [40-65], trailing_trigger_pct [4.0-8.0], trailing_distance_pct [20-35].
+Rangos válidos sentinel: aggression ["conservative"|"moderate"],
+check_interval_min [5-15], confidence_threshold [0.5-0.9], max_interventions [1-5].
+directives, biases y market son opcionales — inclúyelos solo si tienes observaciones relevantes.
+
+IMPORTANTE: No te fijes solo en el win rate. Analiza el RATIO avg_win/avg_loss (R:R).
+Un bot con 60% win rate pero avg_win=$0.20 y avg_loss=$0.80 PIERDE plata.
+Lo que importa es: avg_win * wins > avg_loss * losses. Prioriza R:R > 1.0."""
 
 
 def _format_param_ages(brain: Brain) -> str:
@@ -180,12 +190,20 @@ def _build_darwin_prompt(brain: Brain, journal: Journal, recent: list,
 
     ctx_text = "\n".join(ctx_lines) if ctx_lines else "  Sin contexto compartido"
 
+    # Compute avg win / avg loss for R:R analysis
+    avg_win = stats.get('avg_win', 'N/A')
+    avg_loss = stats.get('avg_loss', 'N/A')
+    rr_ratio = "N/A"
+    if isinstance(avg_win, (int, float)) and isinstance(avg_loss, (int, float)) and avg_loss != 0:
+        rr_ratio = f"{abs(avg_win / avg_loss):.2f}"
+
     return f"""ESTADO ACTUAL DEL BOT:
 Total trades: {stats['total']}, Wins: {stats['wins']}, WR: {stats['win_rate']}%
 PnL neto: ${stats['total_pnl']}, PnL bruto: ${stats.get('gross_pnl', 'N/A')}, Fees pagados: ${stats.get('total_fees', 'N/A')}
 Avg PnL: ${stats['avg_pnl']}, Mejor trade: ${stats['best']}, Peor trade: ${stats['worst']}
+Avg Win: ${avg_win}, Avg Loss: ${avg_loss}, R:R ratio: {rr_ratio} (NECESITA ser > 1.0)
 Streak actual: {brain_summary['streak']}, Evoluciones: {brain_summary['evolve_count']}
-NOTA: Los fees son ~$0.095/trade (Bitget 0.06% taker × 2 lados). Con margen de ~$10, el bot necesita >0.95% por trade solo para cubrir fees.
+NOTA: Los fees son ~$0.12/trade (Bitget 0.06% taker × 2 lados). R:R < 1.0 = el bot pierde plata aunque gane >50%.
 
 PARÁMETROS ACTUALES:
   sl_atr_mult: {params.get('sl_atr_mult')}
@@ -219,7 +237,10 @@ Analiza todo y decide qué cambios hacer. Incluye directivas para Sentinel y bia
 
 def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
                          changes: list, context=None):
-    """Apply Opus decisions to brain state and shared context."""
+    """Apply Opus decisions to brain state and shared context.
+
+    Includes guardrails to prevent Darwin from going extreme.
+    """
     sw = brain.data.get("strategy_weights", {})
     killed_strats = brain.data.setdefault("killed_strategies", [])
     killed_pairs = brain.data.setdefault("killed_pairs", [])
@@ -246,13 +267,19 @@ def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
                 killed_strats.remove(name)
             changes.append(f"BOOST strategy {name} ({reason})")
 
-    # 2. Pair decisions
+    # 2. Pair decisions (with guardrail: don't kill pairs with WR >= 40%)
     for pair_dec in decisions.get("pairs", []):
         name = pair_dec.get("name", "")
         action = pair_dec.get("action", "hold")
         reason = pair_dec.get("reason", "")
 
         if action == "kill" and name not in killed_pairs:
+            pair_stats = journal.get_stats_for_pair(name)
+            wr = pair_stats.get("win_rate", 0)
+            if wr >= 40:
+                logger.info(f"Darwin: BLOCKED kill of {name} — WR={wr}% >= 40%")
+                changes.append(f"BLOCKED KILL pair {name} (WR={wr}% too high)")
+                continue
             killed_pairs.append(name)
             changes.append(f"KILL pair {name} ({reason})")
 
@@ -260,16 +287,17 @@ def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
             killed_pairs.remove(name)
             changes.append(f"RESURRECT pair {name} ({reason})")
 
-    # 3. Parameter adjustments
+    # 3. Parameter adjustments (with guardrail: max 25% change per cycle)
     params = brain.data.get("params", {})
     param_ranges = {
         "sl_atr_mult": (1.8, 3.0),
         "tp_atr_mult": (2.0, 5.0),
-        "leverage_default": (3, 10),
-        "min_score": (40, 70),
-        "trailing_trigger_pct": (0.3, 1.5),
-        "trailing_distance_pct": (25, 60),
+        "leverage_default": (3, 8),
+        "min_score": (40, 65),
+        "trailing_trigger_pct": (4.0, 8.0),
+        "trailing_distance_pct": (20, 35),
     }
+    MAX_PARAM_DELTA_PCT = 0.25  # Max 25% change per cycle
     import time as _time
     param_changed_at = brain.data.setdefault("param_changed_at", {})
     now = _time.time()
@@ -292,27 +320,53 @@ def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
                 logger.info(f"Darwin: SKIP {key} change ({old} → {new_val}), "
                             f"changed {hours_since:.1f}h ago (cooldown 3h)")
                 continue
+            # Guardrail: cap delta to 25% of current value
+            if old != 0:
+                delta_pct = abs(new_val - old) / abs(old)
+                if delta_pct > MAX_PARAM_DELTA_PCT:
+                    clamped = old * (1 + MAX_PARAM_DELTA_PCT) if new_val > old \
+                        else old * (1 - MAX_PARAM_DELTA_PCT)
+                    clamped = type(old)(max(lo, min(hi, clamped)))
+                    logger.info(f"Darwin: CLAMPED {key} delta "
+                                f"({old} → {new_val} = {delta_pct:.0%}), "
+                                f"capped to {clamped}")
+                    new_val = clamped
+            if new_val == old:
+                continue
             params[key] = new_val
             param_changed_at[key] = now
             changes.append(f"ADJUST {key}: {old} → {new_val}")
 
-    # 4. Shared context updates
+    # 4. Shared context updates (with guardrails)
     if context:
-        # Directives
+        # Directives — cap to 5 max, filter out direction bans
         directives = decisions.get("directives")
         if directives and isinstance(directives, list):
-            context.set_directives(directives)
-            changes.append(f"DIRECTIVES: {len(directives)} set")
+            # Filter out directives that ban entire directions
+            filtered = []
+            ban_keywords = ["ban absoluto", "ban all", "prohib", "nunca long",
+                            "nunca short", "0 longs", "0 shorts", "cero long",
+                            "cero short"]
+            for d in directives[:5]:  # Hard cap at 5
+                d_lower = d.lower()
+                if any(kw in d_lower for kw in ban_keywords):
+                    logger.info(f"Darwin: FILTERED directive (direction ban): {d[:80]}")
+                    continue
+                filtered.append(d)
+            if filtered:
+                context.set_directives(filtered)
+                changes.append(f"DIRECTIVES: {len(filtered)} set")
 
-        # Biases
+        # Biases — cap confidence to 0.85 max
         biases = decisions.get("biases")
         if biases and isinstance(biases, dict):
             for pair, bias in biases.items():
                 if isinstance(bias, dict) and "direction" in bias:
+                    conf = min(bias.get("confidence", 0.5), 0.85)
                     context.set_bias(
                         pair,
                         bias["direction"],
-                        bias.get("confidence", 0.5),
+                        conf,
                         bias.get("reason", ""),
                     )
             changes.append(f"BIASES: {len(biases)} updated")
@@ -329,11 +383,21 @@ def _apply_llm_decisions(brain: Brain, journal: Journal, decisions: dict,
             changes.append(f"MARKET: regime={market.get('regime')}, "
                            f"vol={market.get('volatility')}")
 
-        # Sentinel adjustments
+        # Sentinel adjustments — clamp to safe ranges
         sentinel_adj = decisions.get("sentinel_adjustments")
         if sentinel_adj and isinstance(sentinel_adj, dict):
-            # Filter out null values
             updates = {k: v for k, v in sentinel_adj.items() if v is not None}
+            # Guardrails: clamp sentinel to safe ranges
+            if "aggression" in updates:
+                if updates["aggression"] == "aggressive":
+                    updates["aggression"] = "moderate"
+                    logger.info("Darwin: CLAMPED sentinel aggression → moderate")
+            if "check_interval_min" in updates:
+                updates["check_interval_min"] = max(5, updates["check_interval_min"])
+            if "max_interventions" in updates:
+                updates["max_interventions"] = min(5, max(1, updates["max_interventions"]))
+            if "confidence_threshold" in updates:
+                updates["confidence_threshold"] = max(0.5, updates["confidence_threshold"])
             if updates:
                 context.update_sentinel_params(**updates)
                 changes.append(f"SENTINEL: {updates}")
@@ -453,6 +517,9 @@ def _evolve_pairs(brain: Brain, journal: Journal, changes: list):
         wr = stats["win_rate"] / 100 if stats["win_rate"] else 0
 
         if total >= 8 and wr < 0.20 and pair not in killed:
+            # Guardrail: double-check WR is truly bad (not just fee-adjusted)
+            if wr >= 0.40:
+                continue
             killed.append(pair)
             changes.append(f"KILL pair {pair} (WR={wr:.0%}, {total} trades)")
 

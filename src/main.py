@@ -287,12 +287,22 @@ def run_app():
 
     mcp_manager = MCPManager()
 
+    # ---- Google Assistant (for device control) ----
+    google_assistant = None
+    if os.getenv("GOOGLE_ASSISTANT_REFRESH_TOKEN"):
+        try:
+            from src.services.google_assistant import GoogleAssistantService
+            google_assistant = GoogleAssistantService()
+            logger.info("Google Assistant service initialized")
+        except Exception as e:
+            logger.warning(f"Google Assistant init failed (non-fatal): {e}")
+
     # ---- Trading Bot (standalone, scheduler-driven) ----
     trading_bot = TradingBot(
         api_key=settings.bitget_api_key,
         secret=settings.bitget_secret,
         passphrase=settings.bitget_passphrase,
-        paper_mode=False,  # Real mode
+        paper_mode=True,  # Paper mode — testing new signal filters
     )
 
     whatsapp = WhatsAppChannel()
@@ -441,6 +451,7 @@ def run_app():
         printer_service=printer_service,
         trading_bot=trading_bot,
         llm_client=llm,
+        google_assistant=google_assistant,
     )
 
     # ---- Start ----

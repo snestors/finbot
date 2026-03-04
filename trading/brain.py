@@ -10,12 +10,12 @@ BRAIN_FILE = DATA_DIR / "brain.json"
 
 _DEFAULT_BRAIN = {
     "params": {
-        "sl_atr_mult": 2.2,
-        "tp_atr_mult": 3.3,
-        "leverage_default": 8,
-        "min_score": 50,
-        "trailing_trigger_pct": 0.5,
-        "trailing_distance_pct": 40,
+        "sl_atr_mult": 2.0,
+        "tp_atr_mult": 4.0,
+        "leverage_default": 6,
+        "min_score": 55,
+        "trailing_trigger_pct": 5.0,
+        "trailing_distance_pct": 30,
     },
     "strategy_weights": {
         "volume_momentum": {
@@ -27,6 +27,11 @@ _DEFAULT_BRAIN = {
             "regime_trending_up": 0.8,
             "regime_trending_down": 0.9,
             "regime_ranging": 1.3,
+        },
+        "ema_trend": {
+            "regime_trending_up": 1.4,
+            "regime_trending_down": 1.3,
+            "regime_ranging": 0.4,
         },
     },
     "stats": {
