@@ -1,16 +1,18 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/control_device.dart';
 import '../services/controls_api.dart';
+import 'zigbee_provider.dart';
 
 final devicesProvider =
     StateNotifierProvider<DevicesNotifier, List<ControlDevice>>((ref) {
-  return DevicesNotifier(ref.watch(controlsApiProvider));
+  return DevicesNotifier(ref.watch(controlsApiProvider), ref);
 });
 
 class DevicesNotifier extends StateNotifier<List<ControlDevice>> {
   final ControlsApi _api;
+  final Ref _ref;
 
-  DevicesNotifier(this._api) : super([]) {
+  DevicesNotifier(this._api, this._ref) : super([]) {
     load();
   }
 
@@ -23,13 +25,26 @@ class DevicesNotifier extends StateNotifier<List<ControlDevice>> {
     }
   }
 
-  /// Toggle a control on/off via the backend.
+  /// Toggle a control on/off.
+  ///
+  /// If the control has a mapped Zigbee device, the MQTT command fires
+  /// immediately (local, sub-millisecond) for instant physical response.
+  /// The backend API call follows for state persistence.
   Future<void> toggle(String id) async {
-    // Optimistic update
+    // 1. Fire MQTT command instantly if this control has a Zigbee device
+    final device = state.where((d) => d.id == id).firstOrNull;
+    final deviceName = device?.name ?? '';
+    if (hasZigbeeDevice(id, deviceName)) {
+      _ref.read(zigbeeStateProvider.notifier).toggle(id, deviceName);
+    }
+
+    // 2. Optimistic UI update
     state = [
       for (final d in state)
         if (d.id == id) d.copyWith(isActive: !d.isActive) else d,
     ];
+
+    // 3. Persist to backend (non-blocking for the user)
     try {
       final updated = await _api.toggle(id);
       state = [
@@ -37,7 +52,7 @@ class DevicesNotifier extends StateNotifier<List<ControlDevice>> {
           if (d.id == id) updated else d,
       ];
     } catch (_) {
-      // Revert on error
+      // Revert on error (MQTT already fired, but backend failed)
       state = [
         for (final d in state)
           if (d.id == id) d.copyWith(isActive: !d.isActive) else d,

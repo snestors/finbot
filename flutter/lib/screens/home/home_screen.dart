@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import '../../core/app_colors.dart';
 import '../../providers/devices_provider.dart';
+import '../../providers/zigbee_provider.dart';
 import '../../widgets/device_control_button.dart';
 import '../config/config_screen.dart';
 import 'widgets/status_bar_row.dart';
@@ -17,7 +18,23 @@ class HomeScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final devices = ref.watch(devicesProvider);
+    final rawDevices = ref.watch(devicesProvider);
+    final zigbeeState = ref.watch(zigbeeStateProvider);
+
+    // Merge Zigbee state into control devices for Zigbee-mapped controls.
+    // This ensures the UI reflects the actual physical device state from MQTT.
+    final devices = rawDevices.map((d) {
+      final mapping = zigbeeMappingFor(d.id, d.name);
+      if (mapping != null) {
+        final key = '${mapping.deviceId}_${mapping.outlet}';
+        final zState = zigbeeState[key];
+        if (zState != null) {
+          return d.copyWith(isActive: zState.isOn);
+        }
+      }
+      return d;
+    }).toList();
+
     final size = MediaQuery.of(context).size;
     final isLandscape = size.width > size.height;
 
@@ -54,7 +71,7 @@ class HomeScreen extends ConsumerWidget {
             flex: 4,
             child: Column(
               children: [
-                _buildControlHeader(context),
+                _buildControlHeader(context, ref),
                 const SizedBox(height: 8),
                 Expanded(
                   child: devices.isEmpty
@@ -94,17 +111,34 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildControlHeader(BuildContext context) {
+  Widget _buildControlHeader(BuildContext context, WidgetRef ref) {
+    final mqttConnected = ref.watch(mqttConnectedProvider);
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        const Text(
-          'Control',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-          ),
+        Row(
+          children: [
+            const Text(
+              'Control',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 8),
+            // MQTT connection indicator dot
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: mqttConnected
+                    ? AppColors.accentGreen
+                    : AppColors.accentRed,
+              ),
+            ),
+          ],
         ),
         GestureDetector(
           onTap: () => Navigator.of(context).push(
@@ -133,7 +167,7 @@ class HomeScreen extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildControlHeader(context),
+        _buildControlHeader(context, ref),
         const SizedBox(height: 14),
         if (devices.isEmpty)
           _buildEmptyState(context)

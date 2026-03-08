@@ -7,6 +7,7 @@ import 'providers/auth_provider.dart';
 import 'providers/system_stats_provider.dart';
 import 'providers/consumo_provider.dart';
 import 'providers/inactivity_provider.dart';
+import 'providers/zigbee_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/consumo/consumo_screen.dart';
@@ -60,10 +61,12 @@ class _MainShellState extends ConsumerState<MainShell> {
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
     ]);
-    // Start real-time data and load consumo
+    // Start real-time data, load consumo, and connect MQTT
     Future.microtask(() {
       ref.read(systemStatsProvider.notifier).start();
       ref.read(consumoProvider.notifier).load();
+      // Initialize Zigbee provider — connects MQTT and subscribes to devices
+      ref.read(zigbeeStateProvider);
     });
   }
 
