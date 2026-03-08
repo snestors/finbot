@@ -34,10 +34,20 @@ class _AuthGate extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authProvider);
-    if (auth.status == AuthStatus.loggedIn) {
-      return const MainShell();
+    switch (auth.status) {
+      case AuthStatus.loggedIn:
+        return const MainShell();
+      case AuthStatus.unknown:
+      case AuthStatus.loading:
+        return const Scaffold(
+          backgroundColor: AppColors.bgPrimary,
+          body: Center(
+            child: CircularProgressIndicator(color: AppColors.accentBlue),
+          ),
+        );
+      default:
+        return const LoginScreen();
     }
-    return const LoginScreen();
   }
 }
 

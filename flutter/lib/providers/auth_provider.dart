@@ -17,13 +17,39 @@ class AuthState {
 }
 
 final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
-  return AuthNotifier(ref);
+  final notifier = AuthNotifier(ref);
+  // Try to restore session on creation
+  Future.microtask(() => notifier.tryRestoreSession());
+  return notifier;
 });
 
 class AuthNotifier extends StateNotifier<AuthState> {
   final Ref _ref;
 
-  AuthNotifier(this._ref) : super(const AuthState(status: AuthStatus.loggedOut));
+  AuthNotifier(this._ref) : super(const AuthState(status: AuthStatus.unknown));
+
+  /// Try to restore a persisted session by calling a protected endpoint.
+  Future<void> tryRestoreSession() async {
+    try {
+      // Wait for persistent cookie jar to be ready
+      await _ref.read(cookieJarProvider.future);
+      // Re-read dio so it picks up the persistent cookies
+      final dio = _ref.read(dioProvider);
+      final response = await dio.get('/api/controls');
+      // If we get a 200 with data (not an error), session is valid
+      if (response.statusCode == 200 && response.data is! Map) {
+        state = state.copyWith(status: AuthStatus.loggedIn);
+        return;
+      }
+      if (response.data is Map && response.data['error'] == 'unauthorized') {
+        state = state.copyWith(status: AuthStatus.loggedOut);
+        return;
+      }
+      state = state.copyWith(status: AuthStatus.loggedIn);
+    } catch (_) {
+      state = state.copyWith(status: AuthStatus.loggedOut);
+    }
+  }
 
   Future<bool> login(String pin) async {
     state = state.copyWith(status: AuthStatus.loading, errorMessage: null);
@@ -57,7 +83,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  void logout() {
+  Future<void> logout() async {
+    // Clear persisted cookies so session is fully removed
+    try {
+      final jar = await _ref.read(cookieJarProvider.future);
+      jar.deleteAll();
+    } catch (_) {}
     state = const AuthState(status: AuthStatus.loggedOut);
   }
 }
