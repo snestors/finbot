@@ -27,7 +27,7 @@ class HomeScreen extends ConsumerWidget {
     final devices = rawDevices.map((d) {
       final mapping = zigbeeMappingFor(d.id, d.name);
       if (mapping != null) {
-        final key = '${mapping.deviceId}_${mapping.outlet}';
+        final key = '${mapping.serialNumber}_${mapping.channel}';
         final zState = zigbeeState[key];
         if (zState != null) {
           return d.copyWith(isActive: zState.isOn);

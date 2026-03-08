@@ -1,60 +1,35 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:mqtt_client/mqtt_client.dart';
-import 'package:mqtt_client/mqtt_server_client.dart';
+import 'package:mqtt5_client/mqtt5_client.dart';
+import 'package:mqtt5_client/mqtt5_server_client.dart';
 
-/// Callback signature for device state updates from MQTT.
+/// Callback: serialNumber, channel (1-based), isOn
 typedef MqttDeviceStateCallback = void Function(
-    String deviceId, Map<String, dynamic> params);
+    String serialNumber, int channel, bool isOn);
 
-/// MQTT service for controlling Zigbee devices via the local eWeLink broker
-/// running on the NSPanel at localhost:1884.
+/// MQTT v5 service for controlling Zigbee devices via the NSPanel Pro's
+/// bridge-cube running on localhost:1884.
 ///
-/// eWeLink CAST/iHost MQTT topic patterns:
-///   Publish commands:  device/{deviceId}/thing/property/set
-///   Subscribe state:   device/{deviceId}/thing/property/report
-///   Fallback:          subscribe to # on connect to discover topics
+/// Requires authentication and MQTT v5 user properties on publish.
 class MqttService {
   static const String _broker = 'localhost';
   static const int _port = 1884;
   static const String _clientId = 'nspanel_flutter';
+  static const String _username = 'finbot';
+  static const String _password = 'finbot123';
 
   MqttServerClient? _client;
   Timer? _reconnectTimer;
   bool _disposed = false;
   bool _connected = false;
 
-  /// Called when a device state update arrives.
   MqttDeviceStateCallback? onDeviceState;
-
-  /// Called when connection status changes.
   void Function(bool connected)? onConnectionChanged;
 
   bool get isConnected => _connected;
 
-  /// Known topic patterns to try. The service subscribes to all of them
-  /// and also to '#' briefly to discover any other topics.
-  static List<String> _stateTopics(String deviceId) => [
-        'device/$deviceId/thing/property/report',
-        'device/$deviceId/report',
-        'switch/$deviceId/report',
-      ];
-
-  static List<String> _commandTopics(String deviceId) => [
-        'device/$deviceId/thing/property/set',
-        'device/$deviceId/set',
-        'switch/$deviceId/set',
-      ];
-
-  /// Active topic that was confirmed to work, per device.
-  /// Starts null; once a message arrives on a topic, that pattern is locked in.
-  String? _confirmedCommandPattern;
-  String? _confirmedStatePattern;
-
-  /// Set of device IDs we are subscribed to.
   final Set<String> _subscribedDevices = {};
 
-  /// Connect to the local MQTT broker.
   Future<void> connect() async {
     if (_disposed || _connected) return;
 
@@ -67,18 +42,15 @@ class MqttService {
       ..onAutoReconnected = _onAutoReconnected
       ..onConnected = _onConnected
       ..onDisconnected = _onDisconnected
-      ..logging(on: false)
-      ..setProtocolV311();
+      ..logging(on: false);
 
-    // Simple connection message, no auth required for local broker
     final connMsg = MqttConnectMessage()
         .withClientIdentifier(_clientId)
-        .startClean()
-        .withWillQos(MqttQos.atMostOnce);
+        .startClean();
     _client!.connectionMessage = connMsg;
 
     try {
-      await _client!.connect();
+      await _client!.connect(_username, _password);
     } catch (e) {
       _client?.disconnect();
       _client = null;
@@ -89,13 +61,10 @@ class MqttService {
     if (_client?.connectionStatus?.state == MqttConnectionState.connected) {
       _connected = true;
       onConnectionChanged?.call(true);
+      _client!.updates.listen(_onMessage);
 
-      // Listen to all incoming messages
-      _client!.updates?.listen(_onMessage);
-
-      // Re-subscribe to any previously tracked devices
-      for (final deviceId in _subscribedDevices) {
-        _subscribeTopics(deviceId);
+      for (final serial in _subscribedDevices) {
+        _subscribeTopics(serial);
       }
     } else {
       _client?.disconnect();
@@ -112,9 +81,7 @@ class MqttService {
   void _onDisconnected() {
     _connected = false;
     onConnectionChanged?.call(false);
-    if (!_disposed) {
-      _scheduleReconnect();
-    }
+    if (!_disposed) _scheduleReconnect();
   }
 
   void _onAutoReconnect() {
@@ -125,9 +92,8 @@ class MqttService {
   void _onAutoReconnected() {
     _connected = true;
     onConnectionChanged?.call(true);
-    // Re-subscribe after reconnect
-    for (final deviceId in _subscribedDevices) {
-      _subscribeTopics(deviceId);
+    for (final serial in _subscribedDevices) {
+      _subscribeTopics(serial);
     }
   }
 
@@ -137,117 +103,79 @@ class MqttService {
     _reconnectTimer = Timer(const Duration(seconds: 5), connect);
   }
 
-  /// Subscribe to state topics for a specific device.
-  void subscribeToDevice(String deviceId) {
-    _subscribedDevices.add(deviceId);
+  void subscribeToDevice(String serialNumber) {
+    _subscribedDevices.add(serialNumber);
     if (_connected && _client != null) {
-      _subscribeTopics(deviceId);
+      _subscribeTopics(serialNumber);
     }
   }
 
-  void _subscribeTopics(String deviceId) {
+  void _subscribeTopics(String serial) {
     if (_client == null) return;
-
-    // If we already confirmed a pattern, only subscribe to that
-    if (_confirmedStatePattern != null) {
-      final topic = _confirmedStatePattern!.replaceAll('{id}', deviceId);
-      _client!.subscribe(topic, MqttQos.atMostOnce);
-      return;
-    }
-
-    // Subscribe to all possible state topics to discover which one works
-    for (final topic in _stateTopics(deviceId)) {
-      _client!.subscribe(topic, MqttQos.atMostOnce);
-    }
-
-    // Also subscribe to wildcard to discover any unexpected topics
-    // from this device. Use device-specific wildcard to limit noise.
-    _client!.subscribe('device/$deviceId/#', MqttQos.atMostOnce);
-    _client!.subscribe('switch/$deviceId/#', MqttQos.atMostOnce);
+    _client!.subscribe(
+        'zigbee/device/$serial/updated/#', MqttQos.atMostOnce);
   }
 
-  /// Process incoming MQTT messages.
   void _onMessage(List<MqttReceivedMessage<MqttMessage>> messages) {
     for (final msg in messages) {
       final topic = msg.topic;
-      final payload = msg.payload as MqttPublishMessage;
-      final text = MqttPublishPayload.bytesToStringAsString(
-          payload.payload.message);
+      final recMsg = msg.payload as MqttPublishMessage;
+      final text = MqttUtilities.bytesToStringAsString(
+          recMsg.payload.message!);
 
       if (text.isEmpty) continue;
 
+      // Parse: zigbee/device/{serial}/updated/toggle/{channel}
+      final parts = topic.split('/');
+      if (parts.length < 6 ||
+          parts[0] != 'zigbee' ||
+          parts[1] != 'device' ||
+          parts[3] != 'updated' ||
+          parts[4] != 'toggle') {
+        continue;
+      }
+
+      final serial = parts[2];
+      final channel = int.tryParse(parts[5]);
+      if (channel == null) continue;
+
       try {
         final json = jsonDecode(text) as Map<String, dynamic>;
-
-        // Extract device ID from topic or payload
-        String? deviceId = json['deviceid'] as String?;
-        if (deviceId == null) {
-          // Try to extract from topic: device/{deviceId}/...
-          final parts = topic.split('/');
-          if (parts.length >= 2) {
-            deviceId = parts[1];
-          }
+        final toggleState = json['toggleState'] as String?;
+        if (toggleState != null) {
+          onDeviceState?.call(serial, channel, toggleState == 'on');
         }
-
-        if (deviceId == null) continue;
-
-        // Lock in the confirmed state pattern from this topic
-        if (_confirmedStatePattern == null) {
-          _confirmedStatePattern =
-              topic.replaceAll(deviceId, '{id}');
-          // Also infer the command pattern
-          if (topic.contains('/report')) {
-            _confirmedCommandPattern =
-                topic.replaceAll('/report', '/set').replaceAll(deviceId, '{id}');
-          }
-        }
-
-        // Extract params - could be in 'params' key or at top level
-        final params = json['params'] as Map<String, dynamic>? ?? json;
-        onDeviceState?.call(deviceId, Map<String, dynamic>.from(params));
-      } catch (_) {
-        // Ignore malformed messages
-      }
+      } catch (_) {}
     }
   }
 
-  /// Send a switch toggle command to a Zigbee device.
-  ///
-  /// [deviceId] - the eWeLink device ID (e.g. 'a44003f19f')
-  /// [outlet] - channel number (0 = channel 1, 1 = channel 2)
-  /// [on] - true to turn on, false to turn off
-  void toggleSwitch(String deviceId, int outlet, bool on) {
+  /// Toggle a Zigbee device channel via MQTT v5 with user properties.
+  void toggleSwitch(String serialNumber, int channel, bool on) {
     if (!_connected || _client == null) return;
 
-    final payload = jsonEncode({
-      'deviceid': deviceId,
-      'params': {
-        'switches': [
-          {'outlet': outlet, 'switch': on ? 'on' : 'off'},
-        ],
-      },
-    });
+    final topic = 'zigbee/device/$serialNumber/update/toggle/$channel';
+    final payload = jsonEncode({'toggleState': on ? 'on' : 'off'});
 
-    // Publish to confirmed topic or try all known command topics
-    if (_confirmedCommandPattern != null) {
-      final topic = _confirmedCommandPattern!.replaceAll('{id}', deviceId);
-      _publish(topic, payload);
-    } else {
-      // Try all known command topic patterns
-      for (final topic in _commandTopics(deviceId)) {
-        _publish(topic, payload);
-      }
-    }
-  }
-
-  void _publish(String topic, String payload) {
-    if (_client == null) return;
-    final builder = MqttClientPayloadBuilder();
+    final builder = MqttPayloadBuilder();
     builder.addString(payload);
-    _client!.publishMessage(topic, MqttQos.atMostOnce, builder.payload!);
+
+    // User properties required by bridge-cube
+    final prop1 = MqttUserProperty();
+    prop1.pairName = 'reqClientId';
+    prop1.pairValue = 'zigbee2cube';
+    final prop2 = MqttUserProperty();
+    prop2.pairName = 'reqSequence';
+    prop2.pairValue = DateTime.now().millisecondsSinceEpoch.toString();
+    final userProps = [prop1, prop2];
+
+    _client!.publishMessage(
+      topic,
+      MqttQos.atMostOnce,
+      builder.payload!,
+      userProperties: userProps,
+    );
   }
 
-  /// Clean disconnect.
   void disconnect() {
     _disposed = true;
     _reconnectTimer?.cancel();
