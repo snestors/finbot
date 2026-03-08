@@ -1000,8 +1000,11 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
         app.mount("/js", StaticFiles(directory="web/js"), name="js")
 
     # SPA fallback: any unmatched route serves index.html for React Router
+    # (skip /api/ paths so they return 404 instead of HTML)
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            return JSONResponse({"error": "not found"}, status_code=404)
         return FileResponse("web/index.html")
 
     return app
