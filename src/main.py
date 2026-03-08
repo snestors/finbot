@@ -170,6 +170,7 @@ def run_app():
     from src.repository.movimiento_repo import MovimientoRepo
     from src.repository.tarjeta_periodo_repo import TarjetaPeriodoRepo
     from src.repository.movimiento_cuota_repo import MovimientoCuotaRepo
+    from src.repository.control_repo import ControlRepo
     from src.services.receipt_parser import ReceiptParser
     from src.services.document_parser import DocumentParser
     from src.services.budget import BudgetService
@@ -186,11 +187,10 @@ def run_app():
     from src.agents.admin_agent import AdminAgent
     from src.agents.chat_agent import ChatAgent
     from src.agents.action_executor import ActionExecutor
-    from src.agents.trading_agent import TradingAgent
+    from src.agents.unified_agent import UnifiedAgent
+    from src.services.engram_client import EngramClient
     from src.llm import LLMClient
     from google import genai
-    from trading.bot import TradingBot
-    from trading.darwin import darwin_cycle as trading_darwin_cycle
 
     logging.basicConfig(
         level=logging.INFO,
@@ -254,6 +254,7 @@ def run_app():
     movimiento_repo = MovimientoRepo()
     tarjeta_periodo_repo = TarjetaPeriodoRepo()
     movimiento_cuota_repo = MovimientoCuotaRepo()
+    control_repo = ControlRepo()
 
     receipt_parser = ReceiptParser(api_key=settings.google_ai_api_key)
     document_parser = DocumentParser(api_key=settings.google_ai_api_key)
@@ -287,23 +288,20 @@ def run_app():
 
     mcp_manager = MCPManager()
 
+    # ---- Engram (persistent memory) ----
+    # EngramClient wraps engram MCP calls; falls back to direct SQLite if MCP unavailable.
+    # The MCP connection to engram happens in lifespan (after mcp_manager.connect_from_config).
+    engram_client = EngramClient(mcp_manager=mcp_manager, project="finbot")
+
     # ---- Google Assistant (for device control) ----
     google_assistant = None
-    if os.getenv("GOOGLE_ASSISTANT_REFRESH_TOKEN"):
+    if settings.google_assistant_refresh_token:
         try:
             from src.services.google_assistant import GoogleAssistantService
             google_assistant = GoogleAssistantService()
             logger.info("Google Assistant service initialized")
         except Exception as e:
             logger.warning(f"Google Assistant init failed (non-fatal): {e}")
-
-    # ---- Trading Bot (standalone, scheduler-driven) ----
-    trading_bot = TradingBot(
-        api_key=settings.bitget_api_key,
-        secret=settings.bitget_secret,
-        passphrase=settings.bitget_passphrase,
-        paper_mode=True,  # Paper mode — testing new signal filters
-    )
 
     whatsapp = WhatsAppChannel()
     ws_manager = WebSocketManager()
@@ -326,7 +324,6 @@ def run_app():
     registry.register("analysis", AnalysisAgent(llm))
     registry.register("admin", admin_agent)
     registry.register("chat", ChatAgent(llm, mcp_manager=mcp_manager))
-    registry.register("trading", TradingAgent(llm, trading_bot=trading_bot))
 
     repos = {
         "gasto": gasto_repo, "ingreso": ingreso_repo, "deuda": deuda_repo,
@@ -338,6 +335,7 @@ def run_app():
         "movimiento_cuota": movimiento_cuota_repo,
         "consumo": consumo_repo, "pago_consumo": pago_consumo_repo,
         "consumo_config": consumo_config_repo,
+        "control": control_repo,
         "sonoff_service": sonoff_service,
         "printer_service": printer_service,
     }
@@ -351,8 +349,12 @@ def run_app():
         movimiento_cuota_repo=movimiento_cuota_repo,
         tarjeta_periodo_repo=tarjeta_periodo_repo,
         mcp_manager=mcp_manager,
-        trading_bot=trading_bot,
+        google_assistant=google_assistant,
+        engram_client=engram_client,
     )
+
+    # Phase 2: Unified agent (Claude tool_use) — created even if flag is off
+    unified_agent = UnifiedAgent(llm_client=llm, engram_client=engram_client)
 
     processor = Processor(
         router=router,
@@ -363,6 +365,7 @@ def run_app():
         document_parser=document_parser,
         budget_service=budget_service,
         mensaje_repo=mensaje_repo,
+        unified_agent=unified_agent,
     )
 
     message_bus = MessageBus(
@@ -388,7 +391,6 @@ def run_app():
         sonoff_service=sonoff_service,
         consumo_repo=consumo_repo,
         mcp_manager=mcp_manager,
-        trading_bot=trading_bot,
         llm_client=llm,
     )
 
@@ -449,9 +451,9 @@ def run_app():
         gasto_fijo_repo=gasto_fijo_repo,
         llm_usage_repo=llm_usage_repo,
         printer_service=printer_service,
-        trading_bot=trading_bot,
         llm_client=llm,
         google_assistant=google_assistant,
+        control_repo=control_repo,
     )
 
     # ---- Start ----

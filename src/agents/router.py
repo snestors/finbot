@@ -1,3 +1,7 @@
+# PARTIALLY DEPRECATED: The router is only used when UNIFIED_AGENT_ENABLED=False
+# (legacy pipeline). When unified agent is enabled, the fast_path handles common
+# patterns directly, and everything else goes to unified_agent.py.
+# Will be removed after unified agent is validated in production.
 """Rule-based message router. Zero API calls for ~85% of messages."""
 import re
 import logging
@@ -16,7 +20,6 @@ def _normalize(text: str) -> str:
 FINANCE = "finance"
 ANALYSIS = "analysis"
 ADMIN = "admin"
-TRADING = "trading"
 GENERAL = "chat"  # renamed internally; wire value stays "chat" for compatibility
 
 FINANCE_PATTERNS = [
@@ -99,19 +102,6 @@ ADMIN_PATTERNS = [
     r'\b(?:edita|modifica|cambia).*(?:alma|personalidad|estilo)',
 ]
 
-TRADING_PATTERNS = [
-    r'\b(?:trading|bot\s+(?:de\s+)?trading|trades?|posicion(?:es)?)\b',
-    r'\b(?:long|short|leverage|apalancamiento)\b',
-    r'\b(?:bitget|futuros|perpetuos|swap)\b',
-    r'\b(?:pnl|profit|ganancia.*bot|perdida.*bot)\b',
-    r'\b(?:brain|darwin|estrategia.*bot)\b',
-    r'\b(?:btc|eth|xrp|sol|doge)(?:/usdt)?\b',
-    r'\b(?:pausa|resume|reactiva|detener?).*(?:bot|trading)\b',
-    r'\b(?:como\s+va\s+el\s+(?:trading|bot))\b',
-    r'\b(?:win\s*rate|trailing|stop\s*loss)\b',
-    r'\b(?:paper\s*mode|modo\s*papel)\b',
-]
-
 GENERAL_PATTERNS = [
     # Opinions, advice, recommendations
     r'\b(?:que\s+opinas|que\s+piensas|que\s+(?:me\s+)?recomiendas)',
@@ -144,7 +134,6 @@ class MessageRouter:
         self._finance_re = [re.compile(p, re.IGNORECASE) for p in FINANCE_PATTERNS]
         self._analysis_re = [re.compile(p, re.IGNORECASE) for p in ANALYSIS_PATTERNS]
         self._admin_re = [re.compile(p, re.IGNORECASE) for p in ADMIN_PATTERNS]
-        self._trading_re = [re.compile(p, re.IGNORECASE) for p in TRADING_PATTERNS]
         self._general_re = [re.compile(p, re.IGNORECASE) for p in GENERAL_PATTERNS]
 
     # Hard priority: these words ALWAYS route to a specific agent, no scoring
@@ -166,7 +155,6 @@ class MessageRouter:
             FINANCE: self._score(text, self._finance_re),
             ANALYSIS: self._score(text, self._analysis_re),
             ADMIN: self._score(text, self._admin_re),
-            TRADING: self._score(text, self._trading_re),
             GENERAL: self._score(text, self._general_re),
         }
 
@@ -220,7 +208,6 @@ class MessageRouter:
             finance_words = ['gasto', 'registr', 'monto', 'pago', 'cuenta', 's/', 'tarjeta', 'cuota', 'credito', 'banco', 'digito']
             analysis_words = ['presupuesto', 'resumen', 'total', 'cuanto', 'limite mensual', 'kwh', 'consumo', 'categoria', 'impresora', 'printer', 'elegoo', 'capa', 'nozzle']
             admin_words = ['memoria', 'perfil', 'codigo', 'agente', 'calendario', 'calendar', 'gmail', 'drive']
-            trading_words = ['trading', 'bot', 'posicion', 'pnl', 'darwin', 'leverage', 'long', 'short', 'trailing', 'signal']
             general_words = ['opinas', 'recomiend', 'ayud', 'planific', 'idea', 'consejo', 'explica']
             if any(w in lb for w in finance_words):
                 boosted[FINANCE] += 2
@@ -228,8 +215,6 @@ class MessageRouter:
                 boosted[ANALYSIS] += 2
             if any(w in lb for w in admin_words):
                 boosted[ADMIN] += 2
-            if any(w in lb for w in trading_words):
-                boosted[TRADING] += 2
             if any(w in lb for w in general_words):
                 boosted[GENERAL] += 2
         return boosted
@@ -242,11 +227,10 @@ class MessageRouter:
                 role = "U" if msg.get("role") == "user" else "B"
                 recent += f"{role}: {msg.get('content', '')[:100]}\n"
 
-        prompt = f"""Clasifica en UNA categoria: finance, analysis, admin, trading, general
+        prompt = f"""Clasifica en UNA categoria: finance, analysis, admin, general
 - finance: gastos, ingresos, pagos, cuentas, tarjetas, deudas
 - analysis: consultas de datos, resumenes, presupuestos, tipo de cambio, energía
 - admin: recordatorios, memoria, código, sistema, herramientas
-- trading: bot de trading, crypto, posiciones, PnL, leverage, darwin, señales, futuros
 - general: conversación casual, preguntas generales, opiniones, consejos, ideas, planificación, cualquier tema no financiero/admin
 
 {f"Contexto reciente:\\n{recent}" if recent else ""}
@@ -261,7 +245,7 @@ Responde SOLO la categoria:"""
             category = response.text.strip().lower().split()[0]
             if category == "general":
                 category = GENERAL
-            if category in (FINANCE, ANALYSIS, ADMIN, TRADING, GENERAL):
+            if category in (FINANCE, ANALYSIS, ADMIN, GENERAL):
                 return category
         except Exception as e:
             logger.warning(f"Router LLM fallback failed: {e}")

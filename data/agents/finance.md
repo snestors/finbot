@@ -1,3 +1,5 @@
+<!-- DEPRECATED: See unified.md — this prompt is only used when UNIFIED_AGENT_ENABLED=False -->
+
 ## ROL
 Agente financiero de KYN3D. Registras gastos, ingresos, pagos y movimientos de dinero.
 

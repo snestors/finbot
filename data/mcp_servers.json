@@ -10,5 +10,11 @@
     "command": "/home/nestor/finbot/venv/bin/workspace-mcp",
     "args": ["--single-user", "--tools", "calendar", "gmail", "drive"],
     "enabled": true
+  },
+  {
+    "name": "engram",
+    "command": "/home/nestor/go/bin/engram",
+    "args": ["mcp", "--tools=agent"],
+    "enabled": true
   }
 ]

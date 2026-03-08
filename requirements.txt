@@ -17,3 +17,5 @@ zeroconf>=0.131.0
 websocket-client>=1.7.0
 mcp>=1.0.0
 ccxt
+gassist-text>=0.0.11
+google-auth-oauthlib>=1.0.0

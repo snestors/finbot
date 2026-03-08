@@ -26,11 +26,11 @@ class Settings(BaseSettings):
     mcp_servers_config: str = "data/mcp_servers.json"
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
+    google_assistant_refresh_token: str = ""
 
-    # Bitget (trading bot)
-    bitget_api_key: str = ""
-    bitget_secret: str = ""
-    bitget_passphrase: str = ""
+    # Agent overhaul feature flags
+    fast_path_enabled: bool = True
+    unified_agent_enabled: bool = False
 
     # RPi optimizations
     uvicorn_workers: int = 1

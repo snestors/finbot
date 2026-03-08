@@ -1,86 +1,105 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/control_device.dart';
-
-const _storageKey = 'control_devices';
+import '../services/controls_api.dart';
 
 final devicesProvider =
     StateNotifierProvider<DevicesNotifier, List<ControlDevice>>((ref) {
-  return DevicesNotifier();
+  return DevicesNotifier(ref.watch(controlsApiProvider));
 });
 
 class DevicesNotifier extends StateNotifier<List<ControlDevice>> {
-  DevicesNotifier() : super(_defaultDevices) {
-    _load();
+  final ControlsApi _api;
+
+  DevicesNotifier(this._api) : super([]) {
+    load();
   }
 
-  static final _defaultDevices = [
-    ControlDevice(
-      id: 'sala',
-      name: 'Sala',
-      iconName: 'sofa',
-      colorHex: '#FFFFFF',
-      isActive: true,
-    ),
-    ControlDevice(
-      id: 'cocina',
-      name: 'Cocina',
-      iconName: 'soup',
-      colorHex: '#22C55E',
-    ),
-    ControlDevice(
-      id: 'frente',
-      name: 'Frente',
-      iconName: 'palmtree',
-      colorHex: '#06B6D4',
-    ),
-  ];
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final json = prefs.getString(_storageKey);
-    if (json != null) {
-      state = ControlDevice.decodeList(json);
+  /// Fetch all controls from the backend.
+  Future<void> load() async {
+    try {
+      state = await _api.fetchAll();
+    } catch (_) {
+      // Keep current state on error
     }
   }
 
-  Future<void> _save() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_storageKey, ControlDevice.encodeList(state));
-  }
-
-  void toggle(String id) {
+  /// Toggle a control on/off via the backend.
+  Future<void> toggle(String id) async {
+    // Optimistic update
     state = [
       for (final d in state)
         if (d.id == id) d.copyWith(isActive: !d.isActive) else d,
     ];
-    _save();
+    try {
+      final updated = await _api.toggle(id);
+      state = [
+        for (final d in state)
+          if (d.id == id) updated else d,
+      ];
+    } catch (_) {
+      // Revert on error
+      state = [
+        for (final d in state)
+          if (d.id == id) d.copyWith(isActive: !d.isActive) else d,
+      ];
+    }
   }
 
-  void add(ControlDevice device) {
-    state = [...state, device];
-    _save();
+  /// Add a new control via the backend.
+  Future<void> add(ControlDevice device) async {
+    try {
+      final newId = await _api.create(device);
+      // Refetch to get the full server object with correct id
+      state = await _api.fetchAll();
+    } catch (_) {}
   }
 
-  void update(ControlDevice device) {
+  /// Update a control's metadata via the backend.
+  Future<void> update(ControlDevice device) async {
+    // Optimistic update
+    final previous = state;
     state = [
       for (final d in state)
         if (d.id == device.id) device else d,
     ];
-    _save();
+    try {
+      await _api.update(device);
+    } catch (_) {
+      state = previous;
+    }
   }
 
-  void remove(String id) {
+  /// Delete a control via the backend.
+  Future<void> remove(String id) async {
+    final previous = state;
     state = state.where((d) => d.id != id).toList();
-    _save();
+    try {
+      await _api.delete(id);
+    } catch (_) {
+      state = previous;
+    }
   }
 
-  void reorder(int oldIndex, int newIndex) {
+  /// Reorder controls via the backend.
+  Future<void> reorder(int oldIndex, int newIndex) async {
     final items = [...state];
     if (newIndex > oldIndex) newIndex--;
     final item = items.removeAt(oldIndex);
     items.insert(newIndex, item);
     state = items;
-    _save();
+    try {
+      await _api.reorder(items.map((d) => d.id).toList());
+    } catch (_) {
+      // Refetch on error
+      await load();
+    }
+  }
+
+  /// Replace a single control in the local state (used by WS events).
+  void updateLocal(String id, {bool? isActive}) {
+    state = [
+      for (final d in state)
+        if (d.id == id) d.copyWith(isActive: isActive) else d,
+    ];
   }
 }

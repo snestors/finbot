@@ -1,7 +1,21 @@
-"""Processor — thin orchestrator that routes messages to specialized agents."""
+"""Processor — thin orchestrator for the message processing pipeline.
+
+Processing flow:
+  1. Media handling (receipts, documents) — bypasses text pipeline
+  2. Fast path (regex, zero LLM calls) — handles ~85% of text messages
+  3a. Unified agent (Claude tool_use) — when UNIFIED_AGENT_ENABLED=True
+  3b. Legacy pipeline (router -> specialized agents) — when UNIFIED_AGENT_ENABLED=False
+
+When the unified agent is enabled, the router and specialized agents (finance,
+analysis, admin, chat) are bypassed entirely. The legacy pipeline remains as
+a fallback if the unified agent encounters an error.
+"""
 import logging
-import re
+import time
 from dataclasses import dataclass, field
+
+from src.agents.fast_path import try_fast_path
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +64,8 @@ _MUTATING_ACTIONS = {
 class Processor:
     def __init__(self, router, registry, executor, repos: dict,
                  receipt_parser=None, document_parser=None,
-                 budget_service=None, mensaje_repo=None):
+                 budget_service=None, mensaje_repo=None,
+                 unified_agent=None):
         self.router = router
         self.registry = registry
         self.executor = executor
@@ -59,6 +74,7 @@ class Processor:
         self.document_parser = document_parser
         self.budget = budget_service
         self.mensaje_repo = mensaje_repo
+        self.unified_agent = unified_agent  # Phase 2: UnifiedAgent (tool_use)
         self._message_bus = None  # Set by message_bus after init
 
     async def _emit(self, step: str, detail: str = ""):
@@ -84,10 +100,22 @@ class Processor:
         if not text.strip():
             return ProcessResult(response_text="Envia un mensaje de texto o una foto de recibo.")
 
-        # 1. Get history
+        # 0. Fast path — regex-based extraction, zero LLM calls
+        if settings.fast_path_enabled:
+            fp_result = await self._try_fast_path(text)
+            if fp_result is not None:
+                return fp_result
+
+        # 1. Get conversation history for context
         history = await self._get_history()
 
-        # 2. Route to agent (async — may call LLM for ambiguous messages)
+        # 2. Unified agent path — single agent handles all domains via tool_use
+        #    When enabled: fast_path -> unified_agent (no router needed)
+        if settings.unified_agent_enabled and self.unified_agent:
+            return await self._try_unified_agent(text, history)
+
+        # 3. Legacy pipeline — router -> specialized agents (finance/analysis/admin/chat)
+        #    DEPRECATED: This path is active only when UNIFIED_AGENT_ENABLED=False.
         await self._emit("routing", "Analizando mensaje...")
         route = await self.router.route(text, history)
         agent = self.registry.get(route)
@@ -197,6 +225,124 @@ class Processor:
                         tool_outputs.append(action_result["data_response"])
                 if tool_outputs:
                     response += "\n\n" + "\n\n".join(tool_outputs)
+
+        await self._emit("done", "")
+        return ProcessResult(response_text=response, gasto_ids=gasto_ids, model=model)
+
+    async def _try_fast_path(self, text: str) -> ProcessResult | None:
+        """Attempt regex-based fast path. Returns ProcessResult or None."""
+        t0 = time.monotonic()
+        fp = try_fast_path(text)
+        if fp is None:
+            return None
+
+        actions, response_text = fp
+        elapsed_ms = (time.monotonic() - t0) * 1000
+
+        await self._emit("fast_path", f"Fast path ({elapsed_ms:.0f}ms)")
+        logger.info(f"[fast_path] Matched in {elapsed_ms:.1f}ms: '{text[:50]}'")
+
+        # Execute actions through the normal ActionExecutor
+        gasto_ids = []
+        system_errors = []
+        system_confirms = []
+
+        for accion in actions:
+            tipo = accion.get("tipo", "?")
+            await self._emit("action", f"Ejecutando: {tipo}")
+
+            action_result = await self.executor.execute(accion)
+
+            if action_result.get("gasto_id"):
+                gasto_ids.append(action_result["gasto_id"])
+            if action_result.get("movimiento_id"):
+                gasto_ids.append(action_result["movimiento_id"])
+
+            if "ok" in action_result:
+                if not action_result["ok"]:
+                    system_errors.append(action_result.get("message", "Error desconocido"))
+                else:
+                    msg = action_result.get("message", "")
+                    if msg:
+                        system_confirms.append(msg)
+
+            if action_result.get("data_response"):
+                response_text += "\n\n" + action_result["data_response"]
+            if action_result.get("alert"):
+                response_text += "\n" + action_result["alert"]
+
+        if system_errors:
+            response_text += "\n\u26a0\ufe0f " + " | ".join(system_errors)
+        elif system_confirms:
+            response_text += "\n\u2705 " + " | ".join(system_confirms)
+
+        await self._emit("done", "")
+        return ProcessResult(
+            response_text=response_text,
+            gasto_ids=gasto_ids,
+            model="fast_path",
+        )
+
+    async def _try_unified_agent(self, text: str, history: list[dict]) -> ProcessResult:
+        """Route through the unified agent (Claude tool_use). Phase 2."""
+        await self._emit("unified", "Procesando...")
+        logger.info(f"[unified] Processing: '{text[:50]}'")
+
+        try:
+            result = await self.unified_agent.process(
+                text=text,
+                history=history,
+                repos=self.repos,
+                executor=self.executor,
+                emit_fn=self._emit,
+            )
+
+            await self._emit("done", "")
+            return ProcessResult(
+                response_text=result.get("response_text", ""),
+                gasto_ids=result.get("gasto_ids", []),
+                model=result.get("model", ""),
+            )
+
+        except Exception as e:
+            logger.error(f"[unified] Error: {e}", exc_info=True)
+            await self._emit("done", "")
+            # Fall through to old pipeline on error
+            logger.info("[unified] Falling back to old agent pipeline")
+            return await self._process_with_old_pipeline(text, history)
+
+    async def _process_with_old_pipeline(self, text: str, history: list[dict]) -> ProcessResult:
+        """Old agent pipeline (router + specialized agents). Used as fallback."""
+        await self._emit("routing", "Analizando mensaje...")
+        route = await self.router.route(text, history)
+        agent = self.registry.get(route)
+
+        if not agent:
+            logger.error(f"No agent found for route '{route}', falling back to chat")
+            agent = self.registry.get("chat")
+
+        logger.info(f"Routed '{text[:50]}' -> {agent.AGENT_NAME}")
+        await self._emit("routed", f"Agente: {agent.AGENT_NAME}")
+
+        context = await agent.build_context(repos=self.repos)
+        await self._emit("thinking", "Pensando...")
+        result = await agent.parse(text, context=context, history=history)
+
+        response = result.get("respuesta", "")
+        acciones = result.get("acciones", [])
+        model = result.get("_model", "")
+        gasto_ids = []
+
+        for accion in acciones:
+            action_result = await self.executor.execute(accion)
+            if action_result.get("gasto_id"):
+                gasto_ids.append(action_result["gasto_id"])
+            if action_result.get("movimiento_id"):
+                gasto_ids.append(action_result["movimiento_id"])
+            if action_result.get("data_response"):
+                response += "\n\n" + action_result["data_response"]
+            if action_result.get("alert"):
+                response += "\n" + action_result["alert"]
 
         await self._emit("done", "")
         return ProcessResult(response_text=response, gasto_ids=gasto_ids, model=model)

@@ -15,26 +15,33 @@ class RealtimeChartCard extends ConsumerWidget {
     final stats = ref.watch(systemStatsProvider);
     final current = stats.current;
     final history = stats.history;
+    final isLandscape = MediaQuery.of(context).size.width >
+        MediaQuery.of(context).size.height;
+    // Compact chart height in landscape
+    final chartHeight = isLandscape ? 80.0 : 120.0;
+    final spacing = isLandscape ? 8.0 : 14.0;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
+      padding: EdgeInsets.fromLTRB(
+          isLandscape ? 14 : 20, isLandscape ? 10 : 16,
+          isLandscape ? 14 : 20, isLandscape ? 8 : 14),
       decoration: BoxDecoration(
         color: AppColors.bgCard,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(isLandscape ? 14 : 20),
       ),
       child: Column(
         children: [
           _buildHeader(stats.connected),
-          const SizedBox(height: 14),
+          SizedBox(height: spacing),
           _buildLegend(),
-          const SizedBox(height: 14),
+          SizedBox(height: spacing),
           SizedBox(
-            height: 120,
+            height: chartHeight,
             child: _buildChart(history),
           ),
-          const SizedBox(height: 14),
+          SizedBox(height: spacing),
           _buildTimeLabels(history),
-          const SizedBox(height: 14),
+          SizedBox(height: spacing),
           _buildMetricsRow(current),
         ],
       ),

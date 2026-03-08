@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/app_colors.dart';
 import 'core/theme.dart';
 import 'providers/auth_provider.dart';
 import 'providers/system_stats_provider.dart';
 import 'providers/consumo_provider.dart';
+import 'providers/inactivity_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/consumo/consumo_screen.dart';
+import 'screens/screensaver/screensaver_screen.dart';
 import 'widgets/bottom_tab_bar.dart';
 
 class NSPanelApp extends StatelessWidget {
@@ -46,14 +49,54 @@ class MainShell extends ConsumerStatefulWidget {
 
 class _MainShellState extends ConsumerState<MainShell> {
   int _currentIndex = 0;
+  bool _screensaverShowing = false;
 
   @override
   void initState() {
     super.initState();
+    // Kiosk mode: hide system UI overlays for NSPanel
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    // Force landscape orientation for NSPanel (480x320)
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
     // Start real-time data and load consumo
     Future.microtask(() {
       ref.read(systemStatsProvider.notifier).start();
       ref.read(consumoProvider.notifier).load();
+    });
+  }
+
+  @override
+  void dispose() {
+    // Restore orientations on dispose
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    super.dispose();
+  }
+
+  void _onUserInteraction() {
+    ref.read(inactivityProvider.notifier).registerActivity();
+  }
+
+  void _showScreensaver() {
+    if (_screensaverShowing) return;
+    _screensaverShowing = true;
+    Navigator.of(context)
+        .push(
+      PageRouteBuilder(
+        opaque: true,
+        pageBuilder: (_, __, ___) => const ScreensaverScreen(),
+        transitionsBuilder: (_, animation, __, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 600),
+      ),
+    )
+        .then((_) {
+      _screensaverShowing = false;
+      _onUserInteraction();
     });
   }
 
@@ -64,22 +107,39 @@ class _MainShellState extends ConsumerState<MainShell> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.bgPrimary,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: IndexedStack(
-                index: _currentIndex,
-                children: _screens,
-              ),
+    // Listen for inactivity → trigger screensaver
+    ref.listen(inactivityProvider, (prev, shouldShow) {
+      if (shouldShow && !_screensaverShowing) {
+        _showScreensaver();
+      }
+    });
+
+    // Wrap entire UI in a Listener to detect all pointer events
+    return Listener(
+      onPointerDown: (_) => _onUserInteraction(),
+      onPointerMove: (_) => _onUserInteraction(),
+      behavior: HitTestBehavior.translucent,
+      // WillPopScope prevents back button from exiting (kiosk mode)
+      child: PopScope(
+        canPop: false,
+        child: Scaffold(
+          backgroundColor: AppColors.bgPrimary,
+          body: SafeArea(
+            child: Column(
+              children: [
+                Expanded(
+                  child: IndexedStack(
+                    index: _currentIndex,
+                    children: _screens,
+                  ),
+                ),
+                BottomTabBar(
+                  currentIndex: _currentIndex,
+                  onTap: (index) => setState(() => _currentIndex = index),
+                ),
+              ],
             ),
-            BottomTabBar(
-              currentIndex: _currentIndex,
-              onTap: (index) => setState(() => _currentIndex = index),
-            ),
-          ],
+          ),
         ),
       ),
     );

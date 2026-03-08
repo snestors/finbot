@@ -1,3 +1,6 @@
+# DEPRECATED: This base class is used by the legacy specialized agents (finance,
+# analysis, admin, chat). When UNIFIED_AGENT_ENABLED=True, unified_agent.py is
+# used instead. Will be removed after unified agent is validated in production.
 """Base agent class with hot-reloadable prompts and LLM integration."""
 import json
 import logging

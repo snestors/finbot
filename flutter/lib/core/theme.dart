@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'app_colors.dart';
 
 ThemeData buildAppTheme() {
+  const fontFamily = 'sans-serif';
   return ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
@@ -15,9 +15,7 @@ ThemeData buildAppTheme() {
       onSecondary: AppColors.textPrimary,
       onSurface: AppColors.textPrimary,
     ),
-    textTheme: GoogleFonts.dmSansTextTheme(
-      ThemeData.dark().textTheme,
-    ),
+    fontFamily: fontFamily,
     cardTheme: CardThemeData(
       color: AppColors.bgCard,
       shape: RoundedRectangleBorder(

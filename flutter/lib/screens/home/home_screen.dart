@@ -9,13 +9,69 @@ import 'widgets/status_bar_row.dart';
 import 'widgets/time_weather_row.dart';
 import 'widgets/realtime_chart_card.dart';
 
+/// Home screen optimized for NSPanel landscape display (480x320).
+/// Uses adaptive layout: landscape shows side-by-side panels,
+/// portrait falls back to scrollable column.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final devices = ref.watch(devicesProvider);
+    final size = MediaQuery.of(context).size;
+    final isLandscape = size.width > size.height;
 
+    if (isLandscape) {
+      return _buildLandscapeLayout(context, ref, devices);
+    }
+    return _buildPortraitLayout(context, ref, devices);
+  }
+
+  /// Landscape: two-column layout — left (time + chart), right (controls)
+  Widget _buildLandscapeLayout(
+      BuildContext context, WidgetRef ref, List devices) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Left panel: time + realtime chart
+          Expanded(
+            flex: 5,
+            child: SingleChildScrollView(
+              child: Column(
+                children: const [
+                  TimeWeatherRow(),
+                  SizedBox(height: 12),
+                  RealtimeChartCard(),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Right panel: controls
+          Expanded(
+            flex: 4,
+            child: Column(
+              children: [
+                _buildControlHeader(context),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: devices.isEmpty
+                      ? _buildEmptyState(context)
+                      : _buildControlsList(ref, devices),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Portrait: scrollable column layout (original style)
+  Widget _buildPortraitLayout(
+      BuildContext context, WidgetRef ref, List devices) {
     return Column(
       children: [
         const StatusBarRow(),
@@ -38,42 +94,46 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
+  Widget _buildControlHeader(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        const Text(
+          'Control',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        GestureDetector(
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const ConfigScreen()),
+          ),
+          child: Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: AppColors.bgCard,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              LucideIcons.settings,
+              color: AppColors.textSecondary,
+              size: 16,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildControlSection(
       BuildContext context, WidgetRef ref, List devices) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text(
-              'Control',
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            GestureDetector(
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const ConfigScreen()),
-              ),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: AppColors.bgCard,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(
-                  LucideIcons.settings,
-                  color: AppColors.textSecondary,
-                  size: 16,
-                ),
-              ),
-            ),
-          ],
-        ),
+        _buildControlHeader(context),
         const SizedBox(height: 14),
         if (devices.isEmpty)
           _buildEmptyState(context)
@@ -90,10 +150,10 @@ class HomeScreen extends ConsumerWidget {
       ),
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 32),
+        padding: const EdgeInsets.symmetric(vertical: 24),
         decoration: BoxDecoration(
           color: AppColors.bgCard,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppColors.borderSubtle, width: 1),
         ),
         child: Column(
@@ -114,8 +174,24 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
+  /// Scrollable list of controls for landscape right panel.
+  /// Each control is a full-width row with 48dp touch target.
+  Widget _buildControlsList(WidgetRef ref, List devices) {
+    return ListView.separated(
+      itemCount: devices.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (_, index) {
+        final device = devices[index];
+        return DeviceControlButton(
+          device: device,
+          onTap: () => ref.read(devicesProvider.notifier).toggle(device.id),
+        );
+      },
+    );
+  }
+
+  /// Portrait grid: rows of 3 controls
   Widget _buildDeviceGrid(WidgetRef ref, List devices) {
-    // Show in rows of 3
     final rows = <Widget>[];
     for (var i = 0; i < devices.length; i += 3) {
       final rowItems = devices.sublist(
@@ -133,7 +209,6 @@ class HomeScreen extends ConsumerWidget {
                 ),
               ),
             ],
-            // Fill remaining space if row is not complete
             for (var j = rowItems.length; j < 3; j++) ...[
               const SizedBox(width: 12),
               const Expanded(child: SizedBox()),

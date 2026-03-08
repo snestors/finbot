@@ -1,4 +1,15 @@
-"""Specialized context builders for each agent. Only loads relevant data."""
+"""Specialized context builders for each agent. Only loads relevant data.
+
+Active (used by unified_agent.py):
+  - build_finance_context
+  - build_energy_context
+  - build_printer_context
+
+DEPRECATED (only used by legacy agents when UNIFIED_AGENT_ENABLED=False):
+  - build_analysis_context
+  - build_admin_context
+  - build_chat_context
+"""
 import logging
 
 logger = logging.getLogger(__name__)
@@ -220,7 +231,8 @@ async def build_energy_context(repos: dict) -> str:
 
 
 async def build_analysis_context(repos: dict) -> str:
-    """Context for AnalysisAgent: summaries, budgets, account totals. No individual IDs."""
+    """DEPRECATED: Only used by legacy AnalysisAgent. UnifiedAgent builds its own context.
+    Context for AnalysisAgent: summaries, budgets, account totals. No individual IDs."""
     parts = []
 
     # Profile
@@ -338,7 +350,8 @@ async def build_analysis_context(repos: dict) -> str:
 
 async def build_admin_context(repos: dict, registry_info: list[dict] = None,
                               mcp_tools: str = "") -> str:
-    """Context for AdminAgent: profile, memory, reminders, agent registry, MCP tools."""
+    """DEPRECATED: Only used by legacy AdminAgent. UnifiedAgent builds its own context.
+    Context for AdminAgent: profile, memory, reminders, agent registry, MCP tools."""
     parts = []
 
     # Profile
@@ -388,69 +401,6 @@ async def build_admin_context(repos: dict, registry_info: list[dict] = None,
     return "\n".join(parts)
 
 
-def build_trading_context(trading_bot) -> str:
-    """Context for TradingAgent: bot state, position, stats, recent trades."""
-    if not trading_bot:
-        return "Bot de trading no configurado."
-    try:
-        trading_bot._ensure_loaded()
-        parts = []
-
-        state = trading_bot.state.summary()
-        mode = "PAPER" if state.get("paper_mode") else "REAL"
-        paused = " PAUSADO" if state.get("paused") else " ACTIVO"
-        parts.append(f"Bot: {mode}{paused}")
-
-        if state.get("has_position"):
-            pos = state["position"]
-            parts.append(
-                f"Posicion abierta: {pos['side'].upper()} {pos['pair']} "
-                f"@ {pos['entry_price']:.4f} "
-                f"SL={pos.get('sl', 0):.4f} TP={pos.get('tp', 0):.4f} "
-                f"strategy={pos.get('strategy')} score={pos.get('score')}"
-            )
-        else:
-            parts.append("Sin posicion abierta")
-
-        brain = trading_bot.brain.summary()
-        parts.append(
-            f"Brain: {brain['total_trades']} trades, WR={brain['win_rate']}%, "
-            f"PnL=${brain['total_pnl']:.4f}, streak={brain['streak']}"
-        )
-        if brain.get("killed_pairs"):
-            parts.append(f"Pares KILLED: {', '.join(brain['killed_pairs'])}")
-        if brain.get("killed_strategies"):
-            parts.append(f"Estrategias KILLED: {', '.join(brain['killed_strategies'])}")
-
-        params = brain.get("params", {})
-        parts.append(
-            f"Params: leverage={params.get('leverage_default')}x "
-            f"SL={params.get('sl_atr_mult')}xATR TP={params.get('tp_atr_mult')}xATR "
-            f"min_score={params.get('min_score')}"
-        )
-
-        recent = trading_bot.journal.get_recent(5)
-        if recent:
-            trade_lines = []
-            for t in recent:
-                pnl = t.get("pnl", 0)
-                result = "WIN" if pnl > 0 else "LOSS"
-                trade_lines.append(
-                    f"  [{result}] {t.get('pair')} {t.get('side')} "
-                    f"PnL=${pnl:.4f} {t.get('reason')} "
-                    f"hold={t.get('hold_seconds', 0)}s"
-                )
-            parts.append("Ultimos trades:\n" + "\n".join(trade_lines))
-
-        balance = trading_bot.exchange.fetch_balance()
-        parts.append(f"Balance: ${balance:.2f}")
-
-        return "\n".join(parts)
-    except Exception as e:
-        logger.warning(f"build_trading_context error: {e}")
-        return f"Error leyendo estado del bot: {e}"
-
-
 def build_printer_context(repos: dict) -> str:
     """Context for 3D printer status (sync — reads from in-memory latest)."""
     printer = repos.get("printer_service")
@@ -460,7 +410,8 @@ def build_printer_context(repos: dict) -> str:
 
 
 async def build_chat_context(repos: dict) -> str:
-    """Context for ChatAgent: minimal — profile, memory, today summary."""
+    """DEPRECATED: Only used by legacy ChatAgent. UnifiedAgent builds its own context.
+    Context for ChatAgent: minimal — profile, memory, today summary."""
     parts = []
 
     # Profile (or NOT EXISTS for onboarding)

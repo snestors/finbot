@@ -43,12 +43,20 @@ class _TimeWeatherRowState extends ConsumerState<TimeWeatherRow> {
       'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'
     ];
     final dateLabel = '${dayNames[_now.weekday]}, ${_now.day} ${monthNames[_now.month]}';
+    final isLandscape = MediaQuery.of(context).size.width >
+        MediaQuery.of(context).size.height;
+    // Compact sizes for landscape NSPanel
+    final timeFontSize = isLandscape ? 28.0 : 36.0;
+    final kwhFontSize = isLandscape ? 20.0 : 24.0;
+    final padding = isLandscape
+        ? const EdgeInsets.symmetric(horizontal: 12, vertical: 10)
+        : const EdgeInsets.all(16);
 
     return Row(
       children: [
         Expanded(
           child: Container(
-            padding: const EdgeInsets.all(16),
+            padding: padding,
             decoration: BoxDecoration(
               color: AppColors.bgCard,
               borderRadius: BorderRadius.circular(16),
@@ -58,18 +66,18 @@ class _TimeWeatherRowState extends ConsumerState<TimeWeatherRow> {
               children: [
                 Text(
                   timeFmt.format(_now),
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: 36,
+                    fontSize: timeFontSize,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Text(
                   dateLabel,
                   style: const TextStyle(
                     color: AppColors.textSecondary,
-                    fontSize: 13,
+                    fontSize: 12,
                   ),
                 ),
               ],
@@ -79,7 +87,7 @@ class _TimeWeatherRowState extends ConsumerState<TimeWeatherRow> {
         const SizedBox(width: 12),
         Expanded(
           child: Container(
-            padding: const EdgeInsets.all(16),
+            padding: padding,
             decoration: BoxDecoration(
               color: AppColors.bgCard,
               borderRadius: BorderRadius.circular(16),
@@ -87,18 +95,19 @@ class _TimeWeatherRowState extends ConsumerState<TimeWeatherRow> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(LucideIcons.zap,
-                    color: AppColors.accentOrange, size: 28),
-                const SizedBox(height: 6),
+                Icon(LucideIcons.zap,
+                    color: AppColors.accentOrange,
+                    size: isLandscape ? 22 : 28),
+                const SizedBox(height: 4),
                 Text(
                   '${stats.dayKwh.toStringAsFixed(1)} kWh',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: 24,
+                    fontSize: kwhFontSize,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 const Text(
                   'Hoy',
                   style: TextStyle(

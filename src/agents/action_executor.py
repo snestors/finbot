@@ -29,7 +29,8 @@ class ActionExecutor:
                  movimiento_cuota_repo=None,
                  tarjeta_periodo_repo=None,
                  mcp_manager=None,
-                 trading_bot=None):
+                 google_assistant=None,
+                 engram_client=None):
         self.repos = repos
         self.currency = currency_service or CurrencyService()
         self.sunat = sunat_service or SunatTipoCambio()
@@ -38,7 +39,8 @@ class ActionExecutor:
         self.movimiento_cuota_repo = movimiento_cuota_repo
         self.tarjeta_periodo_repo = tarjeta_periodo_repo
         self.mcp_manager = mcp_manager
-        self.trading_bot = trading_bot
+        self.google_assistant = google_assistant
+        self.engram = engram_client
 
         # Load plugins
         self.plugins = PluginManager()
@@ -81,19 +83,18 @@ class ActionExecutor:
             "tipo_cambio_sunat": self._do_tipo_cambio_sunat,
             "tarjeta": self._do_tarjeta,
             "memorizar": self._do_memorizar,
+            "buscar_memoria": self._do_buscar_memoria,
+            "recordar_contexto": self._do_recordar_contexto,
             "importar_calendario": self._do_importar_calendario,
             "consulta_consumo": self._do_consulta_consumo,
             "set_config_consumo": self._do_set_config_consumo,
             "registrar_consumo": self._do_registrar_consumo,
-            # Trading bot
-            "trading_status": self._do_trading_status,
-            "trading_pause": self._do_trading_pause,
-            "trading_resume": self._do_trading_resume,
-            "trading_set_param": self._do_trading_set_param,
             # 3D Printer
             "printer_status": self._do_printer_status,
             "printer_pause": self._do_printer_pause,
             "printer_resume": self._do_printer_resume,
+            # Smart Home (Google Assistant)
+            "smart_home": self._do_smart_home,
         }
 
     async def execute(self, accion: dict) -> dict:
@@ -853,92 +854,104 @@ class ActionExecutor:
         return {"ok": True, "message": "Tarjeta registrada."}
 
     async def _do_memorizar(self, accion: dict) -> dict:
+        # New engram-based memory (title/content/type)
+        titulo = accion.get("titulo") or accion.get("clave", "")
+        contenido = accion.get("contenido") or accion.get("valor", "")
+        tipo = accion.get("tipo") or accion.get("categoria", "dato")
+
+        if self.engram:
+            ok = await self.engram.save(
+                title=titulo,
+                content=contenido,
+                type=tipo,
+            )
+            if ok:
+                logger.info(f"[engram] Memorized: '{titulo}' ({tipo})")
+                return {"ok": True, "message": f"Memorizado: {titulo}"}
+
+        # Legacy fallback to SQLite MemoriaRepo
         memoria_repo = self.repos.get("memoria")
         if memoria_repo:
             await memoria_repo.save(
-                categoria=accion.get("categoria", "dato"),
-                clave=accion.get("clave", ""),
-                valor=accion.get("valor", ""),
+                categoria=tipo,
+                clave=titulo,
+                valor=contenido,
             )
-            logger.info(f"Memorized: [{accion.get('categoria')}] {accion.get('clave')}")
-        return {"ok": True, "message": "Memorizado."}
+            logger.info(f"[legacy] Memorized: [{tipo}] {titulo}")
+            return {"ok": True, "message": f"Memorizado: {titulo}"}
+
+        return {"ok": False, "message": "No hay servicio de memoria disponible."}
+
+    async def _do_buscar_memoria(self, accion: dict) -> dict:
+        consulta = accion.get("consulta", "")
+        limite = accion.get("limite", 5)
+
+        if not consulta:
+            return {"ok": False, "message": "Falta la consulta de busqueda."}
+
+        if self.engram:
+            results = await self.engram.search(query=consulta, limit=limite)
+            if results:
+                lines = [f"Encontre {len(results)} memorias:"]
+                for m in results:
+                    title = m.get("title", "")
+                    content = m.get("content", "")
+                    mtype = m.get("type", "")
+                    # Truncate long content
+                    if len(content) > 200:
+                        content = content[:200] + "..."
+                    lines.append(f"  - [{mtype}] {title}: {content}")
+                return {"ok": True, "data_response": "\n".join(lines)}
+            return {"ok": True, "data_response": f"No encontre memorias sobre '{consulta}'."}
+
+        # Legacy fallback — search in MemoriaRepo
+        memoria_repo = self.repos.get("memoria")
+        if memoria_repo:
+            all_mems = await memoria_repo.get_all()
+            q = consulta.lower()
+            matches = [
+                m for m in all_mems
+                if q in m.get("clave", "").lower() or q in m.get("valor", "").lower()
+            ]
+            if matches:
+                lines = [f"Encontre {len(matches)} memorias:"]
+                for m in matches[:limite]:
+                    lines.append(f"  - [{m['categoria']}] {m['clave']}: {m['valor']}")
+                return {"ok": True, "data_response": "\n".join(lines)}
+            return {"ok": True, "data_response": f"No encontre memorias sobre '{consulta}'."}
+
+        return {"ok": False, "message": "No hay servicio de memoria disponible."}
+
+    async def _do_recordar_contexto(self, accion: dict) -> dict:
+        limite = accion.get("limite", 10)
+
+        if self.engram:
+            results = await self.engram.get_context(limit=limite)
+            if results:
+                lines = [f"Contexto reciente ({len(results)} memorias):"]
+                for m in results:
+                    title = m.get("title", "")
+                    content = m.get("content", "")
+                    mtype = m.get("type", "")
+                    if len(content) > 200:
+                        content = content[:200] + "..."
+                    lines.append(f"  - [{mtype}] {title}: {content}")
+                return {"ok": True, "data_response": "\n".join(lines)}
+            return {"ok": True, "data_response": "No hay memorias guardadas aun."}
+
+        # Legacy fallback
+        memoria_repo = self.repos.get("memoria")
+        if memoria_repo:
+            mem_context = await memoria_repo.format_for_context()
+            if mem_context:
+                return {"ok": True, "data_response": mem_context}
+            return {"ok": True, "data_response": "No hay memorias guardadas aun."}
+
+        return {"ok": False, "message": "No hay servicio de memoria disponible."}
 
     async def _do_importar_calendario(self, accion: dict) -> dict:
         # Calendar import now handled via MCP tools (get_events, etc.)
         return {"data_response": "Usa las herramientas MCP de Calendar para gestionar eventos."}
-
-    # =========================================================================
-    # Trading bot actions
-    # =========================================================================
-
-    async def _do_trading_status(self, accion: dict) -> dict:
-        if not self.trading_bot:
-            return {"data_response": "Bot de trading no esta configurado."}
-        try:
-            status = self.trading_bot.get_status()
-            # Format for readable response
-            state = status.get("state", {})
-            brain = status.get("brain", {})
-            journal = status.get("journal_stats", {})
-            recent = status.get("recent_trades", [])
-            balance = status.get("balance", 0)
-
-            lines = []
-            mode = "PAPER" if state.get("paper_mode") else "REAL"
-            paused = " (PAUSADO)" if state.get("paused") else ""
-            lines.append(f"Bot {mode}{paused} | Balance: ${balance:.2f}")
-
-            if state.get("has_position"):
-                pos = state["position"]
-                lines.append(f"Posicion abierta: {pos['side'].upper()} {pos['pair']} @ {pos['entry_price']:.4f}")
-                lines.append(f"  SL={pos.get('sl', 0):.4f} TP={pos.get('tp', 0):.4f} Trailing={'SI' if pos.get('trailing_active') else 'NO'}")
-
-            lines.append(f"Trades: {journal.get('total', 0)} | WR: {journal.get('win_rate', 0)}% | PnL: ${journal.get('total_pnl', 0):.4f}")
-            lines.append(f"Streak: {brain.get('streak', 0)} | Evoluciones: {brain.get('evolve_count', 0)}")
-
-            if brain.get("killed_pairs"):
-                lines.append(f"Pares KILLED: {', '.join(brain['killed_pairs'])}")
-            if brain.get("killed_strategies"):
-                lines.append(f"Estrategias KILLED: {', '.join(brain['killed_strategies'])}")
-
-            params = brain.get("params", {})
-            lines.append(f"Params: leverage={params.get('leverage_default')}x SL={params.get('sl_atr_mult')}xATR TP={params.get('tp_atr_mult')}xATR")
-
-            if recent:
-                lines.append("Ultimos trades:")
-                for t in recent[-3:]:
-                    pnl = t.get("pnl", 0)
-                    emoji = "W" if pnl > 0 else "L"
-                    lines.append(f"  [{emoji}] {t.get('pair')} {t.get('side')} PnL=${pnl:.4f} ({t.get('reason')})")
-
-            return {"data_response": "\n".join(lines)}
-        except Exception as e:
-            logger.error(f"trading_status error: {e}", exc_info=True)
-            return {"data_response": f"Error leyendo estado del bot: {e}"}
-
-    async def _do_trading_pause(self, accion: dict) -> dict:
-        if not self.trading_bot:
-            return {"data_response": "Bot de trading no esta configurado."}
-        self.trading_bot.pause()
-        return {"ok": True, "data_response": "Bot de trading pausado."}
-
-    async def _do_trading_resume(self, accion: dict) -> dict:
-        if not self.trading_bot:
-            return {"data_response": "Bot de trading no esta configurado."}
-        self.trading_bot.resume()
-        return {"ok": True, "data_response": "Bot de trading reanudado."}
-
-    async def _do_trading_set_param(self, accion: dict) -> dict:
-        if not self.trading_bot:
-            return {"data_response": "Bot de trading no esta configurado."}
-        key = accion.get("key", "")
-        value = accion.get("value")
-        if not key or value is None:
-            return {"ok": False, "data_response": "Falta key o value."}
-        ok = self.trading_bot.set_param(key, value)
-        if ok:
-            return {"ok": True, "data_response": f"Parametro {key} actualizado a {value}."}
-        return {"ok": False, "data_response": f"Parametro invalido: {key}"}
 
     # ------------------------------------------------------------------
     # 3D Printer handlers
@@ -969,6 +982,23 @@ class ActionExecutor:
         if ok:
             return {"ok": True, "data_response": "Impresora reanudada."}
         return {"ok": False, "data_response": "No se pudo reanudar (impresora no conectada)."}
+
+    # ------------------------------------------------------------------
+    # Smart Home (Google Assistant)
+    # ------------------------------------------------------------------
+
+    async def _do_smart_home(self, accion: dict) -> dict:
+        if not self.google_assistant:
+            return {"data_response": "Google Assistant no configurado. Falta GOOGLE_ASSISTANT_REFRESH_TOKEN en .env"}
+        comando = accion.get("comando", "").strip()
+        if not comando:
+            return {"data_response": "Falta el campo 'comando' en la accion smart_home."}
+        try:
+            response = await self.google_assistant.send_command(comando)
+            return {"ok": True, "data_response": f"Google Assistant: {response}"}
+        except Exception as e:
+            logger.error("Smart home command failed: %s", e)
+            return {"ok": False, "data_response": f"Error al ejecutar comando: {e}"}
 
     async def _resumen_hoy_detallado(self) -> str:
         mov_repo = self.repos["movimiento"]

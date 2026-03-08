@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path("data/finbot.db")
 _db: aiosqlite.Connection | None = None
 
-CURRENT_SCHEMA_VERSION = 4  # v4 = consumos extended + pagos_consumo + consumo_config
+CURRENT_SCHEMA_VERSION = 5  # v5 = controls table for NSPanel
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -323,6 +323,17 @@ CREATE TABLE IF NOT EXISTS consumo_config (
     valor TEXT NOT NULL,
     updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- Controls for NSPanel - v5
+CREATE TABLE IF NOT EXISTS controls (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    icon_name TEXT NOT NULL DEFAULT 'lightbulb',
+    color_hex TEXT NOT NULL DEFAULT '#F59E0B',
+    is_active INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 MIGRATIONS = [
@@ -605,6 +616,32 @@ async def _migrate_to_v4(db: aiosqlite.Connection):
     logger.info("v4 migration complete")
 
 
+async def _migrate_to_v5(db: aiosqlite.Connection):
+    """Add controls table for NSPanel smart home dashboard."""
+    version = await _get_schema_version(db)
+    if version >= 5:
+        return
+    logger.info("Starting v5 migration: adding controls table...")
+
+    # Table is already created by SCHEMA (CREATE IF NOT EXISTS)
+    # Seed default controls
+    seed_controls = [
+        ("sala", "Sala", "sofa", "#FFFFFF", 0, 0),
+        ("cocina", "Cocina", "soup", "#22C55E", 0, 1),
+        ("frente", "Frente", "palmtree", "#06B6D4", 0, 2),
+    ]
+    for ctrl in seed_controls:
+        await db.execute(
+            "INSERT OR IGNORE INTO controls (id, name, icon_name, color_hex, is_active, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ctrl,
+        )
+
+    await _set_schema_version(db, 5)
+    await db.commit()
+    logger.info("v5 migration complete")
+
+
 async def init_db():
     global _db
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -617,6 +654,7 @@ async def init_db():
     await _migrate_to_v2(_db)
     await _migrate_to_v3(_db)
     await _migrate_to_v4(_db)
+    await _migrate_to_v5(_db)
     await _db.commit()
     logger.info(f"SQLite initialized: {DB_PATH}")
 

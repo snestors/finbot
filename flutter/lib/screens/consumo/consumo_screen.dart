@@ -26,67 +26,114 @@ class _ConsumoScreenState extends ConsumerState<ConsumoScreen> {
   Widget build(BuildContext context) {
     final consumo = ref.watch(consumoProvider);
     final stats = ref.watch(systemStatsProvider);
+    final isLandscape = MediaQuery.of(context).size.width >
+        MediaQuery.of(context).size.height;
 
+    if (consumo.loading) {
+      return const Center(
+          child: CircularProgressIndicator(color: AppColors.accentBlue));
+    }
+
+    // Landscape: two-column layout
+    if (isLandscape) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Left: billing card + stats
+            Expanded(
+              flex: 5,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildHeader(consumo),
+                    const SizedBox(height: 12),
+                    BillingCard(
+                      amount: consumo.costoTotal,
+                      estimated: consumo.estimadoMes,
+                      dayOfMonth: consumo.diaActual,
+                      daysInMonth: consumo.diasMes,
+                    ),
+                    const SizedBox(height: 12),
+                    _buildStatsRow(consumo, stats.current),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            // Right: weekly chart
+            Expanded(
+              flex: 4,
+              child: SingleChildScrollView(
+                child: WeeklyChart(data: consumo.weeklyData),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Portrait: single column
     return Column(
       children: [
         _buildStatusBar(),
         Expanded(
-          child: consumo.loading
-              ? const Center(
-                  child: CircularProgressIndicator(color: AppColors.accentBlue))
-              : RefreshIndicator(
-                  onRefresh: () => ref.read(consumoProvider.notifier).load(),
-                  child: SingleChildScrollView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildHeader(consumo),
-                        const SizedBox(height: 24),
-                        BillingCard(
-                          amount: consumo.costoTotal,
-                          estimated: consumo.estimadoMes,
-                          dayOfMonth: consumo.diaActual,
-                          daysInMonth: consumo.diasMes,
-                        ),
-                        const SizedBox(height: 24),
-                        _buildStatsRow(consumo, stats.current),
-                        const SizedBox(height: 24),
-                        WeeklyChart(data: consumo.weeklyData),
-                      ],
-                    ),
+          child: RefreshIndicator(
+            onRefresh: () => ref.read(consumoProvider.notifier).load(),
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeader(consumo),
+                  const SizedBox(height: 24),
+                  BillingCard(
+                    amount: consumo.costoTotal,
+                    estimated: consumo.estimadoMes,
+                    dayOfMonth: consumo.diaActual,
+                    daysInMonth: consumo.diasMes,
                   ),
-                ),
+                  const SizedBox(height: 24),
+                  _buildStatsRow(consumo, stats.current),
+                  const SizedBox(height: 24),
+                  WeeklyChart(data: consumo.weeklyData),
+                ],
+              ),
+            ),
+          ),
         ),
       ],
     );
   }
 
   Widget _buildStatusBar() {
+    final isLandscape = MediaQuery.of(context).size.width >
+        MediaQuery.of(context).size.height;
+    // In landscape/kiosk mode, return minimal spacer
+    if (isLandscape) {
+      return const SizedBox(height: 4);
+    }
     return Container(
-      height: 62,
+      height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Text(
-            '9:41',
-            style: TextStyle(
+          Text(
+            '${DateTime.now().hour.toString().padLeft(2, '0')}:'
+            '${DateTime.now().minute.toString().padLeft(2, '0')}',
+            style: const TextStyle(
               color: AppColors.textPrimary,
-              fontFamily: 'Inter',
               fontSize: 15,
               fontWeight: FontWeight.w600,
             ),
           ),
           Row(
             children: const [
-              Icon(LucideIcons.signal, color: AppColors.textPrimary, size: 16),
-              SizedBox(width: 6),
               Icon(LucideIcons.wifi, color: AppColors.textPrimary, size: 16),
-              SizedBox(width: 6),
-              Icon(LucideIcons.batteryFull,
-                  color: AppColors.textPrimary, size: 16),
             ],
           ),
         ],

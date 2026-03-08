@@ -1,7 +1,7 @@
 """LLM client: Claude (primary via OAuth) + Gemini (fallback)."""
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import anthropic
 from google import genai
@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 class LLMResponse:
     text: str
     model: str  # "sonnet" or "gemini"
+    tool_calls: list[dict] = field(default_factory=list)  # tool_use blocks from Claude
+    stop_reason: str = ""  # "end_turn" or "tool_use"
 
 
 class LLMClient:
@@ -81,6 +83,75 @@ class LLMClient:
             return LLMResponse(text=text, model="gemini")
 
         raise RuntimeError("No LLM client available (Claude + Gemini both failed)")
+
+    async def generate_with_tools(
+        self,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        model: str | None = None,
+    ) -> LLMResponse:
+        """Generate response with Claude tool_use API.
+
+        Unlike generate(), this takes pre-built messages (to support the
+        tool_use conversation flow where assistant messages contain tool_use
+        blocks and user messages contain tool_result blocks).
+
+        Returns LLMResponse with tool_calls populated when Claude wants to
+        call tools (stop_reason == "tool_use").
+        """
+        if not self._claude:
+            raise RuntimeError("Claude client not available — tool_use requires Claude")
+
+        for attempt in range(3):
+            try:
+                response = await self._claude.messages.create(
+                    model=model or self._claude_model,
+                    max_tokens=16384,
+                    system=system,
+                    messages=messages,
+                    tools=tools,
+                    extra_headers={"anthropic-beta": "oauth-2025-04-20"},
+                )
+
+                # Extract text and tool_use blocks from response
+                text_parts = []
+                tool_calls = []
+                for block in response.content:
+                    if block.type == "text":
+                        text_parts.append(block.text)
+                    elif block.type == "tool_use":
+                        tool_calls.append({
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        })
+
+                model_label = model or self._claude_model
+                logger.debug(
+                    f"[llm] Claude tool_use OK ({response.usage.input_tokens}in/"
+                    f"{response.usage.output_tokens}out, "
+                    f"{len(tool_calls)} tool_calls, stop={response.stop_reason})"
+                )
+
+                return LLMResponse(
+                    text="\n".join(text_parts),
+                    model=model_label,
+                    tool_calls=tool_calls,
+                    stop_reason=response.stop_reason,
+                )
+
+            except anthropic.RateLimitError:
+                wait = 5 * (attempt + 1)
+                if attempt < 2:
+                    logger.info(f"[llm] Claude 429, retrying in {wait}s (attempt {attempt + 1}/3)")
+                    await asyncio.sleep(wait)
+                else:
+                    logger.warning("[llm] Claude 429 after 3 attempts (tool_use)")
+                    raise
+            except anthropic.APIError as e:
+                logger.error(f"[llm] Claude APIError (tool_use): {e}")
+                raise
 
     async def _call_claude(self, system: str, user_message: str,
                            history: list[dict] | None,

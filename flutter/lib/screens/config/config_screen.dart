@@ -62,21 +62,22 @@ class ConfigScreen extends ConsumerWidget {
 
   Widget _buildHeader(BuildContext context) {
     return Container(
-      height: 62,
+      height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
           GestureDetector(
             onTap: () => Navigator.of(context).pop(),
+            behavior: HitTestBehavior.opaque,
             child: Container(
-              width: 36,
-              height: 36,
+              width: 48,
+              height: 48,
               decoration: BoxDecoration(
                 color: AppColors.bgCard,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
               ),
               child: const Icon(LucideIcons.arrowLeft,
-                  color: AppColors.textPrimary, size: 18),
+                  color: AppColors.textPrimary, size: 20),
             ),
           ),
           const SizedBox(width: 14),
@@ -84,7 +85,7 @@ class ConfigScreen extends ConsumerWidget {
             'Configurar Control',
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: 20,
+              fontSize: 18,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -175,25 +176,25 @@ class _DeviceListTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final iconColor = ColorRegistry.resolve(device.colorHex);
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: AppColors.bgCard,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
         children: [
           Container(
-            width: 42,
-            height: 42,
+            width: 48,
+            height: 48,
             decoration: BoxDecoration(
               color: AppColors.bgCardLight,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
             ),
             child: Icon(
               IconRegistry.resolve(device.iconName),
               color: iconColor,
-              size: 20,
+              size: 22,
             ),
           ),
           const SizedBox(width: 14),
@@ -220,28 +221,38 @@ class _DeviceListTile extends StatelessWidget {
               ],
             ),
           ),
+          // 48dp touch targets for action buttons
           GestureDetector(
             onTap: onEdit,
-            child: const Padding(
-              padding: EdgeInsets.all(8),
-              child:
-                  Icon(LucideIcons.pencil, color: AppColors.textMuted, size: 16),
+            behavior: HitTestBehavior.opaque,
+            child: const SizedBox(
+              width: 48,
+              height: 48,
+              child: Center(
+                child: Icon(LucideIcons.pencil, color: AppColors.textMuted, size: 18),
+              ),
             ),
           ),
           GestureDetector(
             onTap: onDelete,
-            child: const Padding(
-              padding: EdgeInsets.all(8),
-              child:
-                  Icon(LucideIcons.trash2, color: AppColors.accentRed, size: 16),
+            behavior: HitTestBehavior.opaque,
+            child: const SizedBox(
+              width: 48,
+              height: 48,
+              child: Center(
+                child: Icon(LucideIcons.trash2, color: AppColors.accentRed, size: 18),
+              ),
             ),
           ),
           ReorderableDragStartListener(
-            index: 0, // Placeholder — actual index comes from parent builder
-            child: const Padding(
-              padding: EdgeInsets.all(8),
-              child: Icon(LucideIcons.gripVertical,
-                  color: AppColors.textMuted, size: 16),
+            index: 0,
+            child: const SizedBox(
+              width: 48,
+              height: 48,
+              child: Center(
+                child: Icon(LucideIcons.gripVertical,
+                    color: AppColors.textMuted, size: 18),
+              ),
             ),
           ),
         ],
@@ -296,7 +307,7 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
     } else {
       ref.read(devicesProvider.notifier).add(
             ControlDevice(
-              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              id: '',
               name: name,
               iconName: _selectedIcon,
               colorHex: _selectedColor,
@@ -338,21 +349,22 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
 
   Widget _buildHeader() {
     return Container(
-      height: 62,
+      height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
           GestureDetector(
             onTap: () => Navigator.of(context).pop(),
+            behavior: HitTestBehavior.opaque,
             child: Container(
-              width: 36,
-              height: 36,
+              width: 48,
+              height: 48,
               decoration: BoxDecoration(
                 color: AppColors.bgCard,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
               ),
               child: const Icon(LucideIcons.arrowLeft,
-                  color: AppColors.textPrimary, size: 18),
+                  color: AppColors.textPrimary, size: 20),
             ),
           ),
           const SizedBox(width: 14),
@@ -360,7 +372,7 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
             _isEditing ? 'Editar Dispositivo' : 'Nuevo Dispositivo',
             style: const TextStyle(
               color: AppColors.textPrimary,
-              fontSize: 20,
+              fontSize: 18,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -416,26 +428,34 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
         ),
         const SizedBox(height: 12),
         Wrap(
-          spacing: 12,
-          runSpacing: 12,
+          spacing: 10,
+          runSpacing: 10,
           children: ColorRegistry.allHex.map((hex) {
             final isSelected = _selectedColor == hex;
+            // 48dp touch target wrapping a 40dp visual circle
             return GestureDetector(
               onTap: () => setState(() => _selectedColor = hex),
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: ColorRegistry.resolve(hex),
-                  shape: BoxShape.circle,
-                  border: isSelected
-                      ? Border.all(color: AppColors.textPrimary, width: 3)
-                      : null,
+              behavior: HitTestBehavior.opaque,
+              child: SizedBox(
+                width: 48,
+                height: 48,
+                child: Center(
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: ColorRegistry.resolve(hex),
+                      shape: BoxShape.circle,
+                      border: isSelected
+                          ? Border.all(color: AppColors.textPrimary, width: 3)
+                          : null,
+                    ),
+                    child: isSelected
+                        ? const Icon(LucideIcons.check,
+                            color: AppColors.bgPrimary, size: 18)
+                        : null,
+                  ),
                 ),
-                child: isSelected
-                    ? const Icon(LucideIcons.check,
-                        color: AppColors.bgPrimary, size: 18)
-                    : null,
               ),
             );
           }).toList(),
@@ -446,6 +466,11 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
 
   Widget _buildIconPicker() {
     final icons = IconRegistry.available.entries.toList();
+    // Adaptive column count: more columns in landscape
+    final isLandscape = MediaQuery.of(context).size.width >
+        MediaQuery.of(context).size.height;
+    final crossAxisCount = isLandscape ? 8 : 6;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -461,18 +486,21 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
         GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 6,
-            mainAxisSpacing: 10,
-            crossAxisSpacing: 10,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
           ),
           itemCount: icons.length,
           itemBuilder: (context, index) {
             final entry = icons[index];
             final isSelected = _selectedIcon == entry.key;
+            // Each grid cell is at least 48dp (grid fills available space)
             return GestureDetector(
               onTap: () => setState(() => _selectedIcon = entry.key),
+              behavior: HitTestBehavior.opaque,
               child: Container(
+                constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
                 decoration: BoxDecoration(
                   color: isSelected ? AppColors.accentBlue : AppColors.bgCard,
                   borderRadius: BorderRadius.circular(12),
@@ -485,7 +513,7 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
                   color: isSelected
                       ? AppColors.textPrimary
                       : ColorRegistry.resolve(_selectedColor),
-                  size: 20,
+                  size: 22,
                 ),
               ),
             );
@@ -497,17 +525,18 @@ class _DeviceFormScreenState extends ConsumerState<_DeviceFormScreen> {
 
   Widget _buildSaveButton() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
       child: SizedBox(
         width: double.infinity,
-        height: 50,
+        // Minimum 48dp height for touch target
+        height: 52,
         child: ElevatedButton(
           onPressed: _save,
           style: ElevatedButton.styleFrom(
             backgroundColor: AppColors.accentBlue,
             foregroundColor: AppColors.textPrimary,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(14),
             ),
           ),
           child: Text(

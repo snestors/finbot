@@ -1,18 +1,20 @@
-import 'dart:convert';
-
 class ControlDevice {
   final String id;
   final String name;
   final String iconName;
   final String colorHex;
-  bool isActive;
+  final bool isActive;
+  final int sortOrder;
+  final String? createdAt;
 
-  ControlDevice({
+  const ControlDevice({
     required this.id,
     required this.name,
-    required this.iconName,
-    required this.colorHex,
+    this.iconName = 'lightbulb',
+    this.colorHex = '#F59E0B',
     this.isActive = false,
+    this.sortOrder = 0,
+    this.createdAt,
   });
 
   ControlDevice copyWith({
@@ -20,6 +22,7 @@ class ControlDevice {
     String? iconName,
     String? colorHex,
     bool? isActive,
+    int? sortOrder,
   }) {
     return ControlDevice(
       id: id,
@@ -27,30 +30,29 @@ class ControlDevice {
       iconName: iconName ?? this.iconName,
       colorHex: colorHex ?? this.colorHex,
       isActive: isActive ?? this.isActive,
+      sortOrder: sortOrder ?? this.sortOrder,
+      createdAt: createdAt,
     );
   }
 
+  /// Deserialize from backend JSON (snake_case keys).
+  factory ControlDevice.fromJson(Map<String, dynamic> json) => ControlDevice(
+        id: json['id']?.toString() ?? '',
+        name: json['name'] as String? ?? '',
+        iconName: json['icon_name'] as String? ?? 'lightbulb',
+        colorHex: json['color_hex'] as String? ?? '#F59E0B',
+        isActive: json['is_active'] == 1 || json['is_active'] == true,
+        sortOrder: (json['sort_order'] as num?)?.toInt() ?? 0,
+        createdAt: json['created_at'] as String?,
+      );
+
+  /// Serialize to backend JSON (snake_case keys).
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
-        'iconName': iconName,
-        'colorHex': colorHex,
-        'isActive': isActive,
+        'icon_name': iconName,
+        'color_hex': colorHex,
+        'is_active': isActive,
+        'sort_order': sortOrder,
       };
-
-  factory ControlDevice.fromJson(Map<String, dynamic> json) => ControlDevice(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        iconName: json['iconName'] as String,
-        colorHex: json['colorHex'] as String,
-        isActive: json['isActive'] as bool? ?? false,
-      );
-
-  static String encodeList(List<ControlDevice> devices) =>
-      jsonEncode(devices.map((d) => d.toJson()).toList());
-
-  static List<ControlDevice> decodeList(String json) =>
-      (jsonDecode(json) as List)
-          .map((e) => ControlDevice.fromJson(e as Map<String, dynamic>))
-          .toList();
 }

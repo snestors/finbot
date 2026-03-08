@@ -15,7 +15,6 @@ class SchedulerService:
                  movimiento_repo=None, tarjeta_periodo_repo=None,
                  sonoff_service=None, consumo_repo=None,
                  mcp_manager=None,
-                 trading_bot=None,
                  llm_client=None):
         self.scheduler = AsyncIOScheduler(timezone=timezone)
         self.bus = message_bus
@@ -32,7 +31,6 @@ class SchedulerService:
         self.sonoff_service = sonoff_service
         self.consumo_repo = consumo_repo
         self.mcp_manager = mcp_manager
-        self.trading_bot = trading_bot
         self.llm_client = llm_client
 
     async def _get_user_name(self) -> str:
@@ -169,21 +167,6 @@ class SchedulerService:
                 hour=0,
                 minute=30,
                 id="facturar_periodos",
-            )
-
-        # Trading bot — run every minute + Darwin every hour
-        if self.trading_bot:
-            self.scheduler.add_job(
-                self._trading_cycle,
-                "interval",
-                minutes=1,
-                id="trading_cycle",
-            )
-            self.scheduler.add_job(
-                self._trading_darwin,
-                "cron",
-                minute="0,30",
-                id="trading_darwin",
             )
 
         self.scheduler.start()
@@ -455,90 +438,6 @@ class SchedulerService:
                 )
         except Exception as e:
             logger.error(f"Error saving Sonoff reading: {e}")
-
-    # --- Trading bot cycle (every minute) ---
-    async def _trading_cycle(self):
-        if not self.trading_bot:
-            return
-        try:
-            result = await self.trading_bot.run_with_sentinel(llm=self.llm_client)
-            action = result.get("action", "")
-            mode = "PAPER" if self.trading_bot.exchange.paper_mode else "REAL"
-
-            # Proactive alerts for opens/closes
-            if action == "opened":
-                pair = result.get("pair", "?")
-                side = result.get("side", "?").upper()
-                price = result.get("price", 0)
-                strategy = result.get("strategy", "?")
-                score = result.get("score", 0)
-                await self.bus.send_proactive(
-                    f"[Trading {mode}] {side} {pair} @ {price:.4f} "
-                    f"(score={score}, {strategy})"
-                )
-
-            elif action == "closed":
-                trade = result.get("trade", {})
-                pair = trade.get("pair", "?")
-                pnl = trade.get("pnl", 0)
-                reason = trade.get("reason", "?")
-                emoji = "+" if pnl > 0 else ""
-                await self.bus.send_proactive(
-                    f"[Trading {mode}] Cerrado {pair}: {emoji}${pnl:.4f} ({reason})"
-                )
-
-            # Sentinel alerts
-            elif action == "sentinel_tighten":
-                pair = result.get("pair", "?")
-                old_sl = result.get("old_sl", 0)
-                new_sl = result.get("new_sl", 0)
-                reason = result.get("reason", "")
-                await self.bus.send_proactive(
-                    f"[Sentinel {mode}] TIGHTEN {pair}: SL {old_sl:.6f} → {new_sl:.6f}\n{reason}"
-                )
-
-            elif action == "sentinel_close":
-                # Already handled by "closed" above (reason=sentinel_close)
-                pass
-
-            elif action == "sentinel_let_run":
-                pair = result.get("pair", "?")
-                trigger = result.get("new_trailing_trigger", 0)
-                reason = result.get("reason", "")
-                await self.bus.send_proactive(
-                    f"[Sentinel {mode}] LET_RUN {pair}: trailing trigger → {trigger:.2f}%\n{reason}"
-                )
-
-            elif action == "pretrade_blocked":
-                pair = result.get("pair", "?")
-                direction = result.get("direction", "?")
-                score = result.get("score", 0)
-                reason = result.get("reason", "")
-                await self.bus.send_proactive(
-                    f"[Pre-trade {mode}] BLOCKED {direction} {pair} (score={score})\n{reason}"
-                )
-
-        except Exception as e:
-            logger.error(f"Trading cycle error: {e}", exc_info=True)
-
-    # --- Darwin evolution (every hour) ---
-    async def _trading_darwin(self):
-        if not self.trading_bot:
-            return
-        try:
-            from trading.darwin import darwin_cycle
-            self.trading_bot._ensure_loaded()
-            changes = await darwin_cycle(
-                self.trading_bot.brain,
-                self.trading_bot.journal,
-                llm=self.llm_client,
-                context=self.trading_bot.context,
-            )
-            if changes:
-                msg = "[Darwin Opus]\n" + "\n".join(f"• {c}" for c in changes)
-                await self.bus.send_proactive(msg)
-        except Exception as e:
-            logger.error(f"Darwin cycle error: {e}", exc_info=True)
 
     def stop(self):
         self.scheduler.shutdown()

@@ -8,10 +8,11 @@ class WebSocketService {
   Timer? _reconnectTimer;
   bool _disposed = false;
 
-  final void Function(Map<String, dynamic>) onSystemStats;
+  /// Called for every decoded JSON message.
+  final void Function(Map<String, dynamic>) onMessage;
   final void Function()? onDisconnected;
 
-  WebSocketService({required this.onSystemStats, this.onDisconnected});
+  WebSocketService({required this.onMessage, this.onDisconnected});
 
   bool get isConnected => _channel != null;
 
@@ -26,9 +27,7 @@ class WebSocketService {
         (data) {
           try {
             final msg = jsonDecode(data as String) as Map<String, dynamic>;
-            if (msg['type'] == 'system_stats') {
-              onSystemStats(msg);
-            }
+            onMessage(msg);
           } catch (_) {}
         },
         onDone: () {

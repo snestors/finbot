@@ -52,8 +52,9 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
                gasto_fijo_repo=None,
                llm_usage_repo=None,
                printer_service=None,
-               trading_bot=None,
-               llm_client=None) -> FastAPI:
+               llm_client=None,
+               google_assistant=None,
+               control_repo=None) -> FastAPI:
 
     app = FastAPI(title="FinBot", docs_url="/api/docs", lifespan=lifespan)
 
@@ -893,46 +894,6 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-    # --- Trading Bot ---
-    @app.get("/api/trading/status")
-    async def get_trading_status():
-        if not trading_bot:
-            return {"error": "Trading bot no configurado"}
-        try:
-            return trading_bot.get_status()
-        except Exception as e:
-            return {"error": str(e)}
-
-    @app.post("/api/trading/pause")
-    async def trading_pause():
-        if not trading_bot:
-            return {"error": "Trading bot no configurado"}
-        trading_bot.pause()
-        return {"ok": True}
-
-    @app.post("/api/trading/resume")
-    async def trading_resume():
-        if not trading_bot:
-            return {"error": "Trading bot no configurado"}
-        trading_bot.resume()
-        return {"ok": True}
-
-    @app.post("/api/trading/darwin")
-    async def trading_darwin():
-        if not trading_bot:
-            return {"error": "Trading bot no configurado"}
-        try:
-            from trading.darwin import darwin_cycle
-            trading_bot._ensure_loaded()
-            changes = await darwin_cycle(
-                trading_bot.brain,
-                trading_bot.journal,
-                llm=llm_client,
-            )
-            return {"changes": changes or [], "brain": trading_bot.get_brain()}
-        except Exception as e:
-            return {"error": str(e)}
-
     # --- Printer ---
     @app.get("/api/printer/status")
     async def get_printer_status():
@@ -956,6 +917,73 @@ def create_app(message_bus, mensaje_repo, gasto_repo, ingreso_repo,
             )
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=502)
+
+    # --- Device control (Google Assistant) ---
+    @app.post("/api/devices/command")
+    async def device_command(data: dict):
+        if not google_assistant:
+            return JSONResponse({"error": "Google Assistant no configurado"}, status_code=503)
+        command = data.get("command", "").strip()
+        if not command:
+            return JSONResponse({"error": "Falta el campo 'command'"}, status_code=400)
+        try:
+            response = await google_assistant.send_command(command)
+            return {"ok": True, "response": response}
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # --- Controls (NSPanel smart home) ---
+    @app.get("/api/controls")
+    async def get_controls():
+        if not control_repo:
+            return []
+        return await control_repo.get_all()
+
+    @app.post("/api/controls")
+    async def create_control(data: dict):
+        if not control_repo:
+            return {"error": "Controls no disponible"}
+        control_id = await control_repo.create(data)
+        await ws_manager.broadcast({"type": "controls_changed", "controls": await control_repo.get_all()})
+        return {"id": control_id}
+
+    @app.put("/api/controls/reorder")
+    async def reorder_controls(data: dict):
+        if not control_repo:
+            return {"error": "Controls no disponible"}
+        await control_repo.reorder(data.get("ids", []))
+        await ws_manager.broadcast({"type": "controls_changed", "controls": await control_repo.get_all()})
+        return {"ok": True}
+
+    @app.put("/api/controls/{control_id}")
+    async def update_control(control_id: str, data: dict):
+        if not control_repo:
+            return {"error": "Controls no disponible"}
+        ok = await control_repo.update(control_id, data)
+        if not ok:
+            return JSONResponse({"error": "Control no encontrado"}, status_code=404)
+        await ws_manager.broadcast({"type": "controls_changed", "controls": await control_repo.get_all()})
+        return {"ok": True}
+
+    @app.delete("/api/controls/{control_id}")
+    async def delete_control(control_id: str):
+        if not control_repo:
+            return {"error": "Controls no disponible"}
+        ok = await control_repo.delete(control_id)
+        if not ok:
+            return JSONResponse({"error": "Control no encontrado"}, status_code=404)
+        await ws_manager.broadcast({"type": "controls_changed", "controls": await control_repo.get_all()})
+        return {"ok": True}
+
+    @app.post("/api/controls/{control_id}/toggle")
+    async def toggle_control(control_id: str):
+        if not control_repo:
+            return {"error": "Controls no disponible"}
+        result = await control_repo.toggle(control_id)
+        if not result:
+            return JSONResponse({"error": "Control no encontrado"}, status_code=404)
+        await ws_manager.broadcast({"type": "control_toggle", "id": control_id, "is_active": result["is_active"]})
+        return result
 
     # --- Health ---
     @app.get("/api/health")

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/api_client.dart';
 import '../services/websocket_service.dart';
 import 'auth_provider.dart';
+import 'devices_provider.dart';
 
 class SystemStats {
   final double powerW;
@@ -82,7 +83,7 @@ class SystemStatsNotifier extends StateNotifier<StatsState> {
     // Start WebSocket
     _ws?.disconnect();
     _ws = WebSocketService(
-      onSystemStats: _onStats,
+      onMessage: _onMessage,
       onDisconnected: () {
         if (mounted) {
           state = state.copyWith(connected: false);
@@ -104,6 +105,21 @@ class SystemStatsNotifier extends StateNotifier<StatsState> {
     _pollTimer = null;
   }
 
+  void _onMessage(Map<String, dynamic> msg) {
+    final type = msg['type'] as String?;
+    switch (type) {
+      case 'system_stats':
+        _onStats(msg);
+        break;
+      case 'control_toggle':
+        _onControlToggle(msg);
+        break;
+      case 'controls_changed':
+        _onControlsChanged(msg);
+        break;
+    }
+  }
+
   void _onStats(Map<String, dynamic> data) {
     final stats = SystemStats.fromJson(data);
     final newHistory = [...state.history, stats];
@@ -115,6 +131,17 @@ class SystemStatsNotifier extends StateNotifier<StatsState> {
       history: newHistory,
       connected: true,
     );
+  }
+
+  void _onControlToggle(Map<String, dynamic> data) {
+    final id = data['id']?.toString();
+    if (id == null) return;
+    final isActive = data['is_active'] == 1 || data['is_active'] == true;
+    _ref.read(devicesProvider.notifier).updateLocal(id, isActive: isActive);
+  }
+
+  void _onControlsChanged(Map<String, dynamic> data) {
+    _ref.read(devicesProvider.notifier).load();
   }
 
   Future<void> _poll() async {
