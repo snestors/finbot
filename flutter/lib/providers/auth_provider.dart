@@ -31,9 +31,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// Try to restore a persisted session by calling a protected endpoint.
   Future<void> tryRestoreSession() async {
     try {
-      // Wait for persistent cookie jar to be ready
+      // Wait for persistent cookie jar to be ready and Dio to pick it up
       await _ref.read(cookieJarProvider.future);
-      // Re-read dio so it picks up the persistent cookies
+      // Give Riverpod a tick to propagate the listener and swap the interceptor
+      await Future.delayed(Duration.zero);
       final dio = _ref.read(dioProvider);
       final response = await dio.get('/api/controls');
       // If we get a 200 with data (not an error), session is valid

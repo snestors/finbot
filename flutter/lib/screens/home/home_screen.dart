@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import '../../core/app_colors.dart';
+import '../../models/control_device.dart';
 import '../../providers/devices_provider.dart';
 import '../../providers/zigbee_provider.dart';
 import '../../widgets/device_control_button.dart';
@@ -46,7 +47,7 @@ class HomeScreen extends ConsumerWidget {
 
   /// Landscape: two-column layout — left (time + chart), right (controls)
   Widget _buildLandscapeLayout(
-      BuildContext context, WidgetRef ref, List devices) {
+      BuildContext context, WidgetRef ref, List<ControlDevice> devices) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       child: Row(
@@ -88,7 +89,7 @@ class HomeScreen extends ConsumerWidget {
 
   /// Portrait: scrollable column layout (original style)
   Widget _buildPortraitLayout(
-      BuildContext context, WidgetRef ref, List devices) {
+      BuildContext context, WidgetRef ref, List<ControlDevice> devices) {
     return Column(
       children: [
         const StatusBarRow(),
@@ -163,7 +164,7 @@ class HomeScreen extends ConsumerWidget {
   }
 
   Widget _buildControlSection(
-      BuildContext context, WidgetRef ref, List devices) {
+      BuildContext context, WidgetRef ref, List<ControlDevice> devices) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -210,7 +211,7 @@ class HomeScreen extends ConsumerWidget {
 
   /// Scrollable list of controls for landscape right panel.
   /// Each control is a full-width row with 48dp touch target.
-  Widget _buildControlsList(WidgetRef ref, List devices) {
+  Widget _buildControlsList(WidgetRef ref, List<ControlDevice> devices) {
     return ListView.separated(
       itemCount: devices.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
@@ -225,7 +226,7 @@ class HomeScreen extends ConsumerWidget {
   }
 
   /// Portrait grid: rows of 3 controls
-  Widget _buildDeviceGrid(WidgetRef ref, List devices) {
+  Widget _buildDeviceGrid(WidgetRef ref, List<ControlDevice> devices) {
     final rows = <Widget>[];
     for (var i = 0; i < devices.length; i += 3) {
       final rowItems = devices.sublist(

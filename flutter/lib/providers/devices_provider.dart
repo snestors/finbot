@@ -51,7 +51,8 @@ class DevicesNotifier extends StateNotifier<List<ControlDevice>> {
         for (final d in state)
           if (d.id == id) updated else d,
       ];
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[DevicesNotifier] toggle($id) error: $e');
       // Revert on error (MQTT already fired, but backend failed)
       state = [
         for (final d in state)
