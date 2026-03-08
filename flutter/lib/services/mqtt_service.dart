@@ -126,7 +126,7 @@ class MqttService {
       if (text.isEmpty) continue;
 
       // Parse: zigbee/device/{serial}/updated/toggle/{channel}
-      final parts = topic.split('/');
+      final parts = topic?.split('/') ?? [];
       if (parts.length < 6 ||
           parts[0] != 'zigbee' ||
           parts[1] != 'device' ||
