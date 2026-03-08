@@ -1,33 +1,31 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/control_device.dart';
 import '../models/zigbee_device.dart';
 import '../services/mqtt_service.dart';
 
-// ─── Zigbee-to-Control Mapping ──────────────────────────────────
-// Maps control IDs/names to Zigbee serial number + channel.
+// ─── Zigbee-to-Control Mapping (dynamic from Firestore) ───────
 
 class ZigbeeMapping {
   final String serialNumber;
-  final int channel; // 1-based (matches MQTT topic)
+  final int channel;
 
   const ZigbeeMapping({required this.serialNumber, required this.channel});
 }
 
-const Map<String, ZigbeeMapping> controlToZigbee = {
-  'sala': ZigbeeMapping(serialNumber: '0xb48931fffe3df100', channel: 1),
-  'afuera': ZigbeeMapping(serialNumber: '0xb48931fffe3df100', channel: 2),
-};
-
-ZigbeeMapping? zigbeeMappingFor(String id, String name) {
-  return controlToZigbee[name.toLowerCase()] ??
-      controlToZigbee[id.toLowerCase()];
+/// Check if a device has Zigbee mapping (from its model fields).
+bool hasZigbeeDevice(ControlDevice device) {
+  return device.zigbeeSerial != null && device.zigbeeChannel != null;
 }
 
-bool hasZigbeeDevice(String id, [String? name]) {
-  if (controlToZigbee.containsKey(id.toLowerCase())) return true;
-  if (name != null && controlToZigbee.containsKey(name.toLowerCase())) {
-    return true;
+/// Get Zigbee mapping for a device.
+ZigbeeMapping? zigbeeMappingForDevice(ControlDevice device) {
+  if (device.zigbeeSerial != null && device.zigbeeChannel != null) {
+    return ZigbeeMapping(
+      serialNumber: device.zigbeeSerial!,
+      channel: device.zigbeeChannel!,
+    );
   }
-  return false;
+  return null;
 }
 
 // ─── MQTT Service Provider (singleton) ──────────────────────────
@@ -63,34 +61,35 @@ class ZigbeeStateNotifier extends StateNotifier<Map<String, ZigbeeDevice>> {
     if (_initialized) return;
     _initialized = true;
 
-    // Seed initial state from the mapping
-    final initial = <String, ZigbeeDevice>{};
-    for (final entry in controlToZigbee.entries) {
-      final m = entry.value;
-      final key = '${m.serialNumber}_${m.channel}';
-      initial[key] = ZigbeeDevice(
-        deviceId: m.serialNumber,
-        name: entry.key,
-        model: 'SONOFF MINI-ZB2GS-L',
-        outlet: m.channel,
-        isOn: false,
-        online: false,
-      );
-    }
-    state = initial;
-
     // Set up MQTT
     final mqtt = _ref.read(mqttServiceProvider);
     mqtt.onDeviceState = _handleDeviceState;
     mqtt.onConnectionChanged = _handleConnectionChanged;
-
-    // Subscribe to all known devices
-    final serials = controlToZigbee.values.map((m) => m.serialNumber).toSet();
-    for (final serial in serials) {
-      mqtt.subscribeToDevice(serial);
-    }
-
     mqtt.connect();
+  }
+
+  /// Subscribe to Zigbee devices from the current device list.
+  /// Called when devices change to dynamically subscribe to new serials.
+  void syncDevices(List<ControlDevice> devices) {
+    final mqtt = _ref.read(mqttServiceProvider);
+    final initial = <String, ZigbeeDevice>{};
+
+    for (final d in devices) {
+      if (d.zigbeeSerial == null || d.zigbeeChannel == null) continue;
+      final key = '${d.zigbeeSerial}_${d.zigbeeChannel}';
+      // Preserve existing state if we have it
+      initial[key] = state[key] ??
+          ZigbeeDevice(
+            deviceId: d.zigbeeSerial!,
+            name: d.name,
+            model: '',
+            outlet: d.zigbeeChannel!,
+            isOn: false,
+            online: mqtt.isConnected,
+          );
+      mqtt.subscribeToDevice(d.zigbeeSerial!);
+    }
+    state = initial;
   }
 
   void _handleConnectionChanged(bool connected) {
@@ -103,7 +102,6 @@ class ZigbeeStateNotifier extends StateNotifier<Map<String, ZigbeeDevice>> {
     }
   }
 
-  /// Callback from MqttService: serial, channel (1-based), isOn
   void _handleDeviceState(String serialNumber, int channel, bool isOn) {
     final key = '${serialNumber}_$channel';
     final existing = state[key];
@@ -115,24 +113,35 @@ class ZigbeeStateNotifier extends StateNotifier<Map<String, ZigbeeDevice>> {
     }
   }
 
-  /// Toggle a Zigbee switch. Optimistic update + MQTT command.
+  /// Toggle a Zigbee switch. Finds the device by control ID or name.
   bool toggle(String controlId, [String? controlName]) {
-    final mapping = zigbeeMappingFor(controlId, controlName ?? controlId);
-    if (mapping == null) return false;
+    // Find the mapping by looking through current devices
+    // The devices_provider already checked hasZigbeeDevice, so find the mapping
+    for (final entry in state.entries) {
+      final device = entry.value;
+      // Match by name (case-insensitive)
+      if (controlName != null &&
+          device.name.toLowerCase() == controlName.toLowerCase()) {
+        final newState = !device.isOn;
+        state = {...state, entry.key: device.copyWith(isOn: newState)};
+        _ref.read(mqttServiceProvider).toggleSwitch(
+            device.deviceId, device.outlet, newState);
+        return newState;
+      }
+    }
+    return false;
+  }
 
+  /// Toggle by explicit serial + channel.
+  bool toggleByMapping(ZigbeeMapping mapping) {
     final key = '${mapping.serialNumber}_${mapping.channel}';
     final device = state[key];
     if (device == null) return false;
 
     final newState = !device.isOn;
-
-    // Optimistic update
     state = {...state, key: device.copyWith(isOn: newState)};
-
-    // Send MQTT v5 command
     _ref.read(mqttServiceProvider).toggleSwitch(
         mapping.serialNumber, mapping.channel, newState);
-
     return newState;
   }
 }

@@ -6,6 +6,7 @@ import '../../core/icon_registry.dart';
 import '../../core/color_registry.dart';
 import '../../models/control_device.dart';
 import '../../providers/devices_provider.dart';
+import 'add_device_sheet.dart';
 
 class ConfigScreen extends ConsumerWidget {
   const ConfigScreen({super.key});
@@ -87,6 +88,26 @@ class ConfigScreen extends ConsumerWidget {
               color: AppColors.textPrimary,
               fontSize: 18,
               fontWeight: FontWeight.w700,
+            ),
+          ),
+          const Spacer(),
+          GestureDetector(
+            onTap: () => showModalBottomSheet(
+              context: context,
+              backgroundColor: Colors.transparent,
+              isScrollControlled: true,
+              builder: (_) => const AddDeviceSheet(),
+            ),
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: AppColors.bgCard,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Icon(LucideIcons.radio,
+                  color: AppColors.accentCyan, size: 20),
             ),
           ),
         ],
@@ -212,11 +233,14 @@ class _DeviceListTile extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  device.iconName,
+                  device.zigbeeSerial != null
+                      ? '${device.zigbeeSerial} ch${device.zigbeeChannel}'
+                      : device.iconName,
                   style: const TextStyle(
                     color: AppColors.textMuted,
                     fontSize: 12,
                   ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),

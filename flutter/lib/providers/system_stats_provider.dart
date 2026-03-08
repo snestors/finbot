@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../services/api_client.dart';
-import '../services/websocket_service.dart';
+import '../core/constants.dart';
+import '../services/firestore_service.dart';
+import '../services/sonoff_mdns_service.dart';
 import 'auth_provider.dart';
-import 'devices_provider.dart';
 
 class SystemStats {
   final double powerW;
@@ -22,6 +22,15 @@ class SystemStats {
     required this.timestamp,
   });
 
+  factory SystemStats.fromReading(SonoffReading r) => SystemStats(
+        powerW: r.powerW,
+        voltageV: r.voltageV,
+        currentA: r.currentA,
+        dayKwh: r.dayKwh,
+        monthKwh: r.monthKwh,
+        timestamp: r.timestamp,
+      );
+
   factory SystemStats.fromJson(Map<String, dynamic> json) => SystemStats(
         powerW: (json['power_w'] as num?)?.toDouble() ?? 0,
         voltageV: (json['voltage_v'] as num?)?.toDouble() ?? 0,
@@ -35,7 +44,7 @@ class SystemStats {
 /// Holds current stats + rolling history for charts.
 class StatsState {
   final SystemStats current;
-  final List<SystemStats> history; // rolling buffer ~120 points
+  final List<SystemStats> history;
   final bool connected;
 
   const StatsState({
@@ -56,10 +65,19 @@ class StatsState {
       );
 }
 
+/// Singleton Sonoff mDNS service provider.
+final sonoffServiceProvider = Provider<SonoffMdnsService>((ref) {
+  final service = SonoffMdnsService(
+    deviceId: Constants.sonoffDeviceId,
+    deviceKey: Constants.sonoffDeviceKey,
+  );
+  ref.onDispose(() => service.dispose());
+  return service;
+});
+
 final systemStatsProvider =
     StateNotifierProvider<SystemStatsNotifier, StatsState>((ref) {
   final notifier = SystemStatsNotifier(ref);
-  // Auto-connect when logged in
   ref.listen(authProvider, (prev, next) {
     if (next.status == AuthStatus.loggedIn) {
       notifier.start();
@@ -72,56 +90,29 @@ final systemStatsProvider =
 
 class SystemStatsNotifier extends StateNotifier<StatsState> {
   final Ref _ref;
-  WebSocketService? _ws;
-  Timer? _pollTimer;
+  StreamSubscription<SonoffReading>? _sub;
   static const _maxHistory = 120;
 
   SystemStatsNotifier(this._ref)
       : super(StatsState(current: SystemStats(timestamp: DateTime.now())));
 
   void start() {
-    // Start WebSocket
-    _ws?.disconnect();
-    _ws = WebSocketService(
-      onMessage: _onMessage,
-      onDisconnected: () {
-        if (mounted) {
-          state = state.copyWith(connected: false);
-        }
-      },
-    );
-    _ws!.connect();
-
-    // Also poll /api/consumos/actual as fallback every 2s
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _poll());
-    _poll(); // immediate first fetch
+    stop();
+    final sonoff = _ref.read(sonoffServiceProvider);
+    // Wire Firestore for auto-save
+    sonoff.setFirestore(_ref.read(firestoreServiceProvider));
+    _sub = sonoff.readings.listen(_onReading);
+    sonoff.start();
   }
 
   void stop() {
-    _ws?.disconnect();
-    _ws = null;
-    _pollTimer?.cancel();
-    _pollTimer = null;
+    _sub?.cancel();
+    _sub = null;
   }
 
-  void _onMessage(Map<String, dynamic> msg) {
-    final type = msg['type'] as String?;
-    switch (type) {
-      case 'system_stats':
-        _onStats(msg);
-        break;
-      case 'control_toggle':
-        _onControlToggle(msg);
-        break;
-      case 'controls_changed':
-        _onControlsChanged(msg);
-        break;
-    }
-  }
-
-  void _onStats(Map<String, dynamic> data) {
-    final stats = SystemStats.fromJson(data);
+  void _onReading(SonoffReading reading) {
+    if (!mounted) return;
+    final stats = SystemStats.fromReading(reading);
     final newHistory = [...state.history, stats];
     if (newHistory.length > _maxHistory) {
       newHistory.removeRange(0, newHistory.length - _maxHistory);
@@ -131,27 +122,6 @@ class SystemStatsNotifier extends StateNotifier<StatsState> {
       history: newHistory,
       connected: true,
     );
-  }
-
-  void _onControlToggle(Map<String, dynamic> data) {
-    final id = data['id']?.toString();
-    if (id == null) return;
-    final isActive = data['is_active'] == 1 || data['is_active'] == true;
-    _ref.read(devicesProvider.notifier).updateLocal(id, isActive: isActive);
-  }
-
-  void _onControlsChanged(Map<String, dynamic> data) {
-    _ref.read(devicesProvider.notifier).load();
-  }
-
-  Future<void> _poll() async {
-    try {
-      final dio = _ref.read(dioProvider);
-      final response = await dio.get('/api/consumos/actual');
-      if (response.statusCode == 200 && response.data is Map) {
-        _onStats(response.data as Map<String, dynamic>);
-      }
-    } catch (_) {}
   }
 
   @override

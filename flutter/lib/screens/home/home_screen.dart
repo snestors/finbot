@@ -25,9 +25,8 @@ class HomeScreen extends ConsumerWidget {
     // Merge Zigbee state into control devices for Zigbee-mapped controls.
     // This ensures the UI reflects the actual physical device state from MQTT.
     final devices = rawDevices.map((d) {
-      final mapping = zigbeeMappingFor(d.id, d.name);
-      if (mapping != null) {
-        final key = '${mapping.serialNumber}_${mapping.channel}';
+      if (d.zigbeeSerial != null && d.zigbeeChannel != null) {
+        final key = '${d.zigbeeSerial}_${d.zigbeeChannel}';
         final zState = zigbeeState[key];
         if (zState != null) {
           return d.copyWith(isActive: zState.isOn);

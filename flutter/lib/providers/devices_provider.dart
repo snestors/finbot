@@ -1,103 +1,100 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/control_device.dart';
-import '../services/controls_api.dart';
+import '../services/firestore_service.dart';
 import 'zigbee_provider.dart';
 
 final devicesProvider =
     StateNotifierProvider<DevicesNotifier, List<ControlDevice>>((ref) {
-  return DevicesNotifier(ref.watch(controlsApiProvider), ref);
+  return DevicesNotifier(ref);
 });
 
 class DevicesNotifier extends StateNotifier<List<ControlDevice>> {
-  final ControlsApi _api;
   final Ref _ref;
+  StreamSubscription? _sub;
 
-  DevicesNotifier(this._api, this._ref) : super([]) {
-    load();
+  DevicesNotifier(this._ref) : super([]) {
+    _listenToFirestore();
   }
 
-  /// Fetch all controls from the backend.
-  Future<void> load() async {
-    try {
-      state = await _api.fetchAll();
-    } catch (_) {
-      // Keep current state on error
-    }
+  FirestoreService get _fs => _ref.read(firestoreServiceProvider);
+
+  void _listenToFirestore() {
+    _sub = _fs.watchDevices().listen(
+      (devices) {
+        if (mounted) state = devices;
+      },
+      onError: (e) => debugPrint('[DevicesNotifier] Firestore error: $e'),
+    );
   }
 
-  /// Toggle a control on/off.
-  ///
-  /// If the control has a mapped Zigbee device, the MQTT command fires
-  /// immediately (local, sub-millisecond) for instant physical response.
-  /// The backend API call follows for state persistence.
+  /// Toggle a control on/off via MQTT + Firestore.
   Future<void> toggle(String id) async {
-    // 1. Fire MQTT command instantly if this control has a Zigbee device
     final device = state.where((d) => d.id == id).firstOrNull;
-    final deviceName = device?.name ?? '';
-    if (hasZigbeeDevice(id, deviceName)) {
-      _ref.read(zigbeeStateProvider.notifier).toggle(id, deviceName);
+    if (device == null) return;
+    final deviceName = device.name;
+
+    // Fire MQTT command instantly if mapped
+    final mapping = zigbeeMappingForDevice(device);
+    if (mapping != null) {
+      _ref.read(zigbeeStateProvider.notifier).toggleByMapping(mapping);
     }
 
-    // 2. Optimistic UI update
+    // Optimistic UI update
+    final newActive = !device.isActive;
     state = [
       for (final d in state)
-        if (d.id == id) d.copyWith(isActive: !d.isActive) else d,
+        if (d.id == id) d.copyWith(isActive: newActive) else d,
     ];
 
-    // 3. Persist to backend (non-blocking for the user)
+    // Persist to Firestore
     try {
-      final updated = await _api.toggle(id);
-      state = [
-        for (final d in state)
-          if (d.id == id) updated else d,
-      ];
+      await _fs.toggleDevice(id, newActive);
     } catch (e) {
-      debugPrint('[DevicesNotifier] toggle($id) error: $e');
-      // Revert on error (MQTT already fired, but backend failed)
+      debugPrint('[DevicesNotifier] toggle error: $e');
       state = [
         for (final d in state)
-          if (d.id == id) d.copyWith(isActive: !d.isActive) else d,
+          if (d.id == id) d.copyWith(isActive: !newActive) else d,
       ];
     }
   }
 
-  /// Add a new control via the backend.
+  /// Add a new control to Firestore.
   Future<void> add(ControlDevice device) async {
     try {
-      final newId = await _api.create(device);
-      // Refetch to get the full server object with correct id
-      state = await _api.fetchAll();
-    } catch (_) {}
+      await _fs.addDevice(device.copyWith(sortOrder: state.length));
+    } catch (e) {
+      debugPrint('[DevicesNotifier] add error: $e');
+    }
   }
 
-  /// Update a control's metadata via the backend.
+  /// Update a control's metadata in Firestore.
   Future<void> update(ControlDevice device) async {
-    // Optimistic update
     final previous = state;
     state = [
       for (final d in state)
         if (d.id == device.id) device else d,
     ];
     try {
-      await _api.update(device);
+      await _fs.updateDevice(device);
     } catch (_) {
       state = previous;
     }
   }
 
-  /// Delete a control via the backend.
+  /// Delete a control from Firestore.
   Future<void> remove(String id) async {
     final previous = state;
     state = state.where((d) => d.id != id).toList();
     try {
-      await _api.delete(id);
+      await _fs.deleteDevice(id);
     } catch (_) {
       state = previous;
     }
   }
 
-  /// Reorder controls via the backend.
+  /// Reorder controls in Firestore.
   Future<void> reorder(int oldIndex, int newIndex) async {
     final items = [...state];
     if (newIndex > oldIndex) newIndex--;
@@ -105,18 +102,23 @@ class DevicesNotifier extends StateNotifier<List<ControlDevice>> {
     items.insert(newIndex, item);
     state = items;
     try {
-      await _api.reorder(items.map((d) => d.id).toList());
+      await _fs.reorderDevices(items);
     } catch (_) {
-      // Refetch on error
-      await load();
+      // Firestore stream will correct on next snapshot
     }
   }
 
-  /// Replace a single control in the local state (used by WS events).
+  /// Replace a single control in the local state.
   void updateLocal(String id, {bool? isActive}) {
     state = [
       for (final d in state)
         if (d.id == id) d.copyWith(isActive: isActive) else d,
     ];
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 }

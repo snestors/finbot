@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/app_colors.dart';
 import 'core/theme.dart';
 import 'providers/auth_provider.dart';
+import 'providers/devices_provider.dart';
 import 'providers/system_stats_provider.dart';
 import 'providers/consumo_provider.dart';
 import 'providers/inactivity_provider.dart';
@@ -75,9 +76,13 @@ class _MainShellState extends ConsumerState<MainShell> {
     Future.microtask(() {
       ref.read(systemStatsProvider.notifier).start();
       ref.read(consumoProvider.notifier).load();
-      // Initialize Zigbee provider — connects MQTT and subscribes to devices
+      // Initialize Zigbee provider — connects MQTT
       ref.read(zigbeeStateProvider);
     });
+    // Sync Zigbee subscriptions whenever devices change
+    ref.listenManual(devicesProvider, (prev, next) {
+      ref.read(zigbeeStateProvider.notifier).syncDevices(next);
+    }, fireImmediately: true);
   }
 
   @override

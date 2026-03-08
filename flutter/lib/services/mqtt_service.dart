@@ -7,10 +7,23 @@ import 'package:mqtt5_client/mqtt5_server_client.dart';
 typedef MqttDeviceStateCallback = void Function(
     String serialNumber, int channel, bool isOn);
 
+/// Discovered Zigbee device from MQTT info messages.
+class ZigbeeDiscovery {
+  final String serial;
+  final String model;
+  final String name;
+  final List<int> channels;
+
+  const ZigbeeDiscovery({
+    required this.serial,
+    required this.model,
+    required this.name,
+    required this.channels,
+  });
+}
+
 /// MQTT v5 service for controlling Zigbee devices via the NSPanel Pro's
 /// bridge-cube running on localhost:1884.
-///
-/// Requires authentication and MQTT v5 user properties on publish.
 class MqttService {
   static const String _broker = 'localhost';
   static const int _port = 1884;
@@ -22,6 +35,7 @@ class MqttService {
   Timer? _reconnectTimer;
   bool _disposed = false;
   bool _connected = false;
+  bool _discoverySubscribed = false;
 
   MqttDeviceStateCallback? onDeviceState;
   void Function(bool connected)? onConnectionChanged;
@@ -29,6 +43,13 @@ class MqttService {
   bool get isConnected => _connected;
 
   final Set<String> _subscribedDevices = {};
+
+  // Discovery stream
+  final _discoveryController = StreamController<ZigbeeDiscovery>.broadcast();
+  Stream<ZigbeeDiscovery> get discoveries => _discoveryController.stream;
+  final Map<String, ZigbeeDiscovery> _discoveredDevices = {};
+  Map<String, ZigbeeDiscovery> get discoveredDevices =>
+      Map.unmodifiable(_discoveredDevices);
 
   Future<void> connect() async {
     if (_disposed || _connected) return;
@@ -66,6 +87,9 @@ class MqttService {
       for (final serial in _subscribedDevices) {
         _subscribeTopics(serial);
       }
+      if (_discoverySubscribed) {
+        _subscribeDiscovery();
+      }
     } else {
       _client?.disconnect();
       _client = null;
@@ -95,6 +119,9 @@ class MqttService {
     for (final serial in _subscribedDevices) {
       _subscribeTopics(serial);
     }
+    if (_discoverySubscribed) {
+      _subscribeDiscovery();
+    }
   }
 
   void _scheduleReconnect() {
@@ -116,6 +143,25 @@ class MqttService {
         'zigbee/device/$serial/updated/#', MqttQos.atMostOnce);
   }
 
+  /// Start scanning for all Zigbee devices via wildcard subscription.
+  void startDiscovery() {
+    _discoverySubscribed = true;
+    if (_connected && _client != null) {
+      _subscribeDiscovery();
+    }
+  }
+
+  void stopDiscovery() {
+    _discoverySubscribed = false;
+  }
+
+  void _subscribeDiscovery() {
+    if (_client == null) return;
+    // Subscribe to all device update topics with wildcard
+    _client!.subscribe(
+        'zigbee/device/+/updated/#', MqttQos.atMostOnce);
+  }
+
   void _onMessage(List<MqttReceivedMessage<MqttMessage>> messages) {
     for (final msg in messages) {
       final topic = msg.topic;
@@ -125,28 +171,81 @@ class MqttService {
 
       if (text.isEmpty) continue;
 
-      // Parse: zigbee/device/{serial}/updated/toggle/{channel}
       final parts = topic?.split('/') ?? [];
-      if (parts.length < 6 ||
+      if (parts.length < 5 ||
           parts[0] != 'zigbee' ||
           parts[1] != 'device' ||
-          parts[3] != 'updated' ||
-          parts[4] != 'toggle') {
+          parts[3] != 'updated') {
         continue;
       }
 
       final serial = parts[2];
-      final channel = int.tryParse(parts[5]);
-      if (channel == null) continue;
+      final updateType = parts[4];
 
-      try {
-        final json = jsonDecode(text) as Map<String, dynamic>;
-        final toggleState = json['toggleState'] as String?;
-        if (toggleState != null) {
-          onDeviceState?.call(serial, channel, toggleState == 'on');
-        }
-      } catch (_) {}
+      if (updateType == 'toggle' && parts.length >= 6) {
+        // Toggle state update
+        final channel = int.tryParse(parts[5]);
+        if (channel == null) continue;
+
+        try {
+          final json = jsonDecode(text) as Map<String, dynamic>;
+          final toggleState = json['toggleState'] as String?;
+          if (toggleState != null) {
+            onDeviceState?.call(serial, channel, toggleState == 'on');
+
+            // Also track for discovery — we know this channel exists
+            _trackDiscoveredChannel(serial, channel);
+          }
+        } catch (_) {}
+      } else if (updateType == 'info') {
+        // Device info message — used for discovery
+        try {
+          final json = jsonDecode(text) as Map<String, dynamic>;
+          _handleDeviceInfo(serial, json);
+        } catch (_) {}
+      }
     }
+  }
+
+  void _trackDiscoveredChannel(String serial, int channel) {
+    final existing = _discoveredDevices[serial];
+    if (existing != null) {
+      if (!existing.channels.contains(channel)) {
+        final updated = ZigbeeDiscovery(
+          serial: serial,
+          model: existing.model,
+          name: existing.name,
+          channels: [...existing.channels, channel]..sort(),
+        );
+        _discoveredDevices[serial] = updated;
+        _discoveryController.add(updated);
+      }
+    } else {
+      final discovery = ZigbeeDiscovery(
+        serial: serial,
+        model: '',
+        name: serial,
+        channels: [channel],
+      );
+      _discoveredDevices[serial] = discovery;
+      _discoveryController.add(discovery);
+    }
+  }
+
+  void _handleDeviceInfo(String serial, Map<String, dynamic> json) {
+    final model = json['model'] as String? ?? '';
+    final name = json['name'] as String? ?? serial;
+    final existing = _discoveredDevices[serial];
+    final channels = existing?.channels ?? [];
+
+    final discovery = ZigbeeDiscovery(
+      serial: serial,
+      model: model,
+      name: name,
+      channels: channels,
+    );
+    _discoveredDevices[serial] = discovery;
+    _discoveryController.add(discovery);
   }
 
   /// Toggle a Zigbee device channel via MQTT v5 with user properties.
@@ -182,5 +281,6 @@ class MqttService {
     _client?.disconnect();
     _client = null;
     _connected = false;
+    _discoveryController.close();
   }
 }
