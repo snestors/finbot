@@ -1,10 +1,8 @@
 import 'package:dio/dio.dart';
-import 'package:dio/browser.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:cookie_jar/cookie_jar.dart';
-import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
+import 'api_client_native.dart' if (dart.library.html) 'api_client_web.dart';
 
 final cookieJarProvider = Provider<CookieJar>((_) => CookieJar());
 
@@ -16,15 +14,8 @@ final dioProvider = Provider<Dio>((ref) {
     headers: {'Content-Type': 'application/json'},
   ));
 
-  if (kIsWeb) {
-    // On web, browser handles cookies automatically.
-    // We need withCredentials for cross-origin cookie sending.
-    dio.httpClientAdapter = BrowserHttpClientAdapter(withCredentials: true);
-  } else {
-    // On native platforms, use cookie_jar
-    final cookieJar = ref.watch(cookieJarProvider);
-    dio.interceptors.add(CookieManager(cookieJar));
-  }
+  final cookieJar = ref.watch(cookieJarProvider);
+  configureDio(dio, cookieJar);
 
   return dio;
 });

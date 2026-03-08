@@ -13,10 +13,9 @@ void main() {
       statusBarIconBrightness: Brightness.light,
     ),
   );
-  // Force landscape for NSPanel (480x320 display)
+  // Force portrait for NSPanel
   SystemChrome.setPreferredOrientations([
-    DeviceOrientation.landscapeLeft,
-    DeviceOrientation.landscapeRight,
+    DeviceOrientation.portraitUp,
   ]);
   runApp(const ProviderScope(child: NSPanelApp()));
 }

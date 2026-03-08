@@ -56,10 +56,9 @@ class _MainShellState extends ConsumerState<MainShell> {
     super.initState();
     // Kiosk mode: hide system UI overlays for NSPanel
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    // Force landscape orientation for NSPanel (480x320)
+    // Force portrait orientation for NSPanel
     SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
+      DeviceOrientation.portraitUp,
     ]);
     // Start real-time data and load consumo
     Future.microtask(() {

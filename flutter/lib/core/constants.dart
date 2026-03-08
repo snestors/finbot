@@ -1,6 +1,6 @@
 class Constants {
   Constants._();
 
-  static const String apiBaseUrl = 'https://findagent.kyn3d.com';
-  static String get wsUrl => apiBaseUrl.replaceFirst('https', 'wss');
+  static const String apiBaseUrl = 'http://192.168.1.62:8080';
+  static String get wsUrl => apiBaseUrl.replaceFirst('http', 'ws');
 }
