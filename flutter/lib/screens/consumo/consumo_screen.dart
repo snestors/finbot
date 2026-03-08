@@ -142,13 +142,19 @@ class _ConsumoScreenState extends ConsumerState<ConsumoScreen> {
   }
 
   Widget _buildHeader(ConsumoState consumo) {
-    final now = DateTime.now();
     final months = [
       '', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun',
       'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'
     ];
-    final prevMonth = now.month == 1 ? 12 : now.month - 1;
-    final periodLabel = '${months[prevMonth]} - ${months[now.month]}';
+    String periodLabel;
+    try {
+      final desde = DateTime.parse(consumo.periodoDesde);
+      final hasta = DateTime.parse(consumo.periodoHasta);
+      periodLabel = '${desde.day} ${months[desde.month]} - ${hasta.day} ${months[hasta.month]}';
+    } catch (_) {
+      final now = DateTime.now();
+      periodLabel = '7 ${months[now.month == 1 ? 12 : now.month - 1]} - 7 ${months[now.month]}';
+    }
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -189,16 +195,16 @@ class _ConsumoScreenState extends ConsumerState<ConsumoScreen> {
   }
 
   Widget _buildStatsRow(ConsumoState consumo, SystemStats current) {
-    // Use live month_kwh from system stats if available, fallback to consumo state
-    final monthKwh = current.monthKwh > 0 ? current.monthKwh : consumo.kwhMes;
-    final promedio = consumo.dias > 0 ? monthKwh / consumo.dias : 0.0;
+    // Usar kWh del período de facturación (7 al 7), no del mes calendario
+    final periodKwh = consumo.kwhMes;
+    final promedio = consumo.dias > 0 ? periodKwh / consumo.dias : 0.0;
 
     return Row(
       children: [
         Expanded(
           child: StatCard(
             label: 'Consumo Total',
-            value: '${monthKwh.toStringAsFixed(1)} kWh',
+            value: '${periodKwh.toStringAsFixed(1)} kWh',
             subtitle: 'Este periodo',
             icon: LucideIcons.plugZap,
             iconColor: AppColors.accentBlue,
